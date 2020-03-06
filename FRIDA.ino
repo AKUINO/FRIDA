@@ -533,5 +533,5 @@ int calculateCheckSUM(String SensorName, float Value)
     }
     Serial.println(result);
     Serial.println("Outside CheckSUM calculation");
-    return result; //&& 0xFF;//On ne garde que le premier? octet.
+    return result;
 }
