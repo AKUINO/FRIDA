@@ -67,6 +67,7 @@ AdafruitIO_Feed *feedTMP117 = io.feed("TMP117_sonde température");
 
 bool WiFiConnected = false;
 uint16_t elsaTimeoutCounter = 0;
+enum PlatformUsed { UNDEF, AdafruitIO, Elsa };
 //SENSORS
 Adafruit_SHT31 sht31 = Adafruit_SHT31();                //Humidity & Temperature sensor
 TMP117 sensor48;                                        //Initalize Temperature-only sensor
@@ -109,7 +110,7 @@ void initAdaCallBack();
 //SENSORS & DISPLAY TASKS
 Task tReadSensor(5 * TASK_SECOND, TASK_FOREVER, &readSensorCallBack, &ts, true);
 
-Task tReadButtonsState(200, TASK_FOREVER, &readButtonsStateCallBack, &ts, true);
+Task tReadButtonsState(200, TASK_FOREVER, &readButtonsStateCallBack, &ts, true); //200 milliseconds
 Task tShutScreenOff(TASK_MINUTE, 1, &shutScreenOffCallBack, &ts, false);
 
 //NETWORK TASKS
@@ -545,11 +546,7 @@ void initAdaCallBack()
     if ( tConnect.getInternalStatusRequest()->getStatus() != CONNECT_OK ) {  // Check status of the tConnect Task
         Serial.println("Cannot send to Ada -> not connected : WiFi !CONNECT_OK");
         WiFiConnected = false;
-        tConnect.setCallback(&connectInitCallBack);
-        tConnect.enableDelayed();
-        tSendToAda.disable();
-        tSendToAda.setCallback(&initElsaCallBack);
-        tSendToAda.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+        resetTaskForWiFiConnection(tSendToAda, AdafruitIO);
         return;
     }
     tSendToAda.set(TASK_MINUTE, TASK_FOREVER, &sendToAdaCallBack);
@@ -573,7 +570,7 @@ void sendToAdaCallBack()
 
 void sendToAda_SHT31()
 {
-    if(WiFi.status() == WL_CONNECTED)
+    if(WiFi.status() == WL_CONNECTED)//Redundant as is is already done in initAdaCallBack(). We may want to remove this.
     {
         if(SHT31_T>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
         {
@@ -592,11 +589,7 @@ void sendToAda_SHT31()
     {
         PL_("WiFi Status != WL_CONNECTED");
         WiFiConnected = false;
-        tConnect.setCallback(&connectInitCallBack);
-        tConnect.enableDelayed();
-        tSendToAda.disable();
-        tSendToAda.setCallback(&initAdaCallBack);
-        tSendToAda.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+        resetTaskForWiFiConnection(tSendToAda, AdafruitIO);
     }
     client.stop();
     tSendToAda.yield(&initAdaCallBack);
@@ -604,7 +597,7 @@ void sendToAda_SHT31()
 
 void sendToAda_TMP117()
 {
-    if(WiFi.status() == WL_CONNECTED)
+    if(WiFi.status() == WL_CONNECTED)//Redundant as is is already done in initAdaCallBack(). We may want to remove this.
     {
         Serial.print("sending -> TMP117_T ");
         Serial.println(TMP117_T);
@@ -614,11 +607,7 @@ void sendToAda_TMP117()
     {
         PL_("WiFi Status != WL_CONNECTED");
         WiFiConnected = false;
-        tConnect.setCallback(&connectInitCallBack);
-        tConnect.enableDelayed();
-        tSendToAda.disable();
-        tSendToAda.setCallback(&initAdaCallBack);
-        tSendToAda.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+        resetTaskForWiFiConnection(tSendToAda, AdafruitIO);
     }
     client.stop();
     tSendToAda.yield(&initAdaCallBack);
@@ -631,11 +620,7 @@ void initElsaCallBack()
     if ( tConnect.getInternalStatusRequest()->getStatus() != CONNECT_OK ) {  // Check status of the tConnect Task
         Serial.println("Cannot send to Elsa -> not connected : WiFi !CONNECT_OK");
         WiFiConnected = false;
-        tConnect.setCallback(&connectInitCallBack);
-        tConnect.enableDelayed();
-        tSendToElsa.disable();
-        tSendToElsa.setCallback(&initElsaCallBack);
-        tSendToElsa.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+        resetTaskForWiFiConnection(tSendToElsa, Elsa);
         return;
     }
     tSendToElsa.set(TASK_MINUTE, TASK_FOREVER, &sendDataToElsaCallBack);
@@ -662,7 +647,7 @@ void sendToElsa_SHT31()
 {
     PL_("sendToElsa_SHT31");
     PL_("Before if WiFi status == Connected");
-    if(WiFi.status() == WL_CONNECTED)
+    if(WiFi.status() == WL_CONNECTED)//this is redundant, we may want to remove this protection as it is already made in initElsaCallBack().
     {
         if(SHT31_T>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
         {
@@ -695,7 +680,7 @@ void sendToElsa_SHT31()
                     {
                         PL_("10 elsa Timeouts, trying to reconnect");
                         elsaTimeoutCounter = 0;
-                        tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &initElsaCallBack);
+                        tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &initElsaCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
                         tSendToElsa.enableDelayed();
                     }
                     return;
@@ -734,7 +719,7 @@ void sendToElsa_SHT31()
                     {
                         PL_("10 elsa Timeouts, trying to reconnect");
                         elsaTimeoutCounter = 0;
-                        tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &initElsaCallBack);
+                        tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &initElsaCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
                         tSendToElsa.enableDelayed();
                     }
                     return;
@@ -748,11 +733,7 @@ void sendToElsa_SHT31()
     else{
         PL_("WiFi Status != WL_CONNECTED");
         WiFiConnected = false;
-        tConnect.setCallback(&connectInitCallBack);
-        tConnect.enableDelayed();
-        tSendToElsa.disable();
-        tSendToElsa.setCallback(&initElsaCallBack);
-        tSendToElsa.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+        resetTaskForWiFiConnection(tSendToElsa, Elsa);
     }
     client.stop();
     tSendToElsa.yield(&initElsaCallBack);
@@ -763,7 +744,7 @@ void sendToElsa_TMP117()
     PL_("sendToElsa_TMP117");
     PL_("Before if WiFi = connected");
 
-    if(WiFi.status() == WL_CONNECTED)
+    if(WiFi.status() == WL_CONNECTED)//this is redundant, we may want to remove this protection as it is already made in initElsaCallBack().
     {
         Serial.println("Sending HTTP request...");
         // Make a HTTP request:
@@ -794,7 +775,7 @@ void sendToElsa_TMP117()
                 {
                     PL_("10 elsa Timeouts, trying to reconnect");
                     elsaTimeoutCounter = 0;
-                    tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &initElsaCallBack);
+                    tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &initElsaCallBack); //this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
                     tSendToElsa.enableDelayed();
                 }
                 return;
@@ -807,14 +788,34 @@ void sendToElsa_TMP117()
     else{
         PL_("WiFi Status != WL_CONNECTED");
         WiFiConnected = false;
-        tConnect.setCallback(&connectInitCallBack);
-        tConnect.enableDelayed();
-        tSendToElsa.disable();
-        tSendToElsa.setCallback(&initElsaCallBack);
-        tSendToElsa.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+        resetTaskForWiFiConnection(tSendToElsa, Elsa);
     }
     client.stop();
     tSendToElsa.yield(&initElsaCallBack);
+}
+
+
+void resetTaskForWiFiConnection (Task& dataSendingTask, PlatformUsed platformUsed)
+{
+    switch (platformUsed) //Using a switch in case we want to add new possibilities in a future development. Btw, switch only allows integer/char so we use an ENUM which is basically hidden integers++++++++++
+    {
+        case AdafruitIO:
+            dataSendingTask.disable();
+            dataSendingTask.setCallback(&initAdaCallBack);
+            dataSendingTask.waitFor(tConnect.getInternalStatusRequest()); //connectToAdaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+            break;
+        case Elsa:
+            dataSendingTask.disable();
+            dataSendingTask.setCallback(&initElsaCallBack);
+            dataSendingTask.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+            break;
+        default:
+            PL_("resetTaskForWiFiConnection DEFAULT SWITCH, an error happened !");
+            //We might want to add all Tasks in charge of sending data to an online platform in an array and reset all these tasks here ?
+            break;
+    }
+    tConnect.setCallback(&connectInitCallBack); //Restarting WiFi connection
+    tConnect.enableDelayed();
 }
 
 int calculateCheckSUM(String SensorName, float Value)
