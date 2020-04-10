@@ -43,6 +43,9 @@
 #include <NTPClient.h>
 #include <IotWebConf.h>
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////VARIABLES DECLARATION///////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 Scheduler ts;
 
 //NETWORK
@@ -95,10 +98,6 @@ const char wifiInitialApPassword[] = "1234";
 #define STRING_LEN 128
 #define NUMBER_LEN 32
 
-// -- Configuration specific key. The value should be modified if config structure was changed.
-#define CONFIG_VERSION "Alph"
-
-// -- Callback method declarations.
 void configSaved();
 boolean formValidator();
 
@@ -109,7 +108,6 @@ char ElsaHostnameValue[STRING_LEN];
 char ElsaSensorNameValue_Temperature[STRING_LEN];
 char ElsaSensorNameValue_Humidity[STRING_LEN];
 
-
 IotWebConf iotWebConf(initialThingName, &dnsServer, &server, wifiInitialApPassword);
 
 IotWebConfSeparator Separator1 = IotWebConfSeparator();
@@ -119,26 +117,96 @@ IotWebConfParameter ElsaSensorName_Temperature = IotWebConfParameter("Elsa tempe
 IotWebConfParameter ElsaSensorName_Humidity = IotWebConfParameter("Elsa optional humidity sensor name", "ElsaSensorName_Humidity_ID", ElsaSensorNameValue_Humidity, STRING_LEN);
 
 
+// -- Configuration specific key. The value should be modified if config structure was changed.
+//#define CONFIG_VERSION "Alph"
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////TASKS AND CALLBACK METHODS/////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// -- Callback method declarations.
+//SENSORS & DISPLAY CALLBACK METHODS
+void readSensorCallBack();
+void readButtonsStateCallBack();
+void shutScreenOffCallBack();
+
+//NETWORK CALLBACK METHODS
+void aioTimeUpdBackgroundCallback();
+void initElsaCallBack();
+
 void webConfLoopCallBack();
 void checkWebConfStatusCallBack();
 void getElsaCredentialsCallBack();
 
-// -- IotWebConf Tasks
+// -- TASKS
+//SENSORS & DISPLAY TASKS
+Task tReadSensor(5 * TASK_SECOND, TASK_FOREVER, &readSensorCallBack, &ts, true);
+Task tReadButtonsState(200, TASK_FOREVER, &readButtonsStateCallBack, &ts, true); //200 milliseconds delay
+Task tShutScreenOff(TASK_MINUTE, 1, &shutScreenOffCallBack, &ts, false);
+
+//IotWebConf
 Task tWebConfLoop(TASK_SECOND, TASK_FOREVER, &webConfLoopCallBack, &ts, true);
 Task tCheckWebConfStatus(TASK_SECOND, TASK_FOREVER, &checkWebConfStatusCallBack, &ts, true);
 
-// -- NETWORK : SENDING DATA
+//NETWORK
+Task tIoTimeUpd(10 * TASK_SECOND, TASK_FOREVER, &aioTimeUpdBackgroundCallback, &ts, true);
 Task tSendToElsa(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack, &ts, false);
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////START OF SETUP//////////////////////////////////////////////////////
+//  - Launches Serial connection to computer
+//  - Starts the M5Stack components
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void setup()
 {
+    #if defined(_DEBUG_) || defined(_TEST_)
     Serial.begin(115200);
-    Serial.println();
+    #endif
     Serial.println("Starting up...");
+    //M5STACK & SENSORS
+    M5.begin(true,false,true); // init lcd, serial, but don't init sd card
+    M5.Power.begin();
+    M5.Lcd.setTextColor(TFT_WHITE,TFT_BLACK);
+    M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
+    M5.Lcd.setCursor(0,20);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setRotation(3); //Invert the display
+    M5.Lcd.setBrightness(100);
+    M5.Lcd.clear();
+    M5.Lcd.setCursor(0,0);
+    M5.Lcd.println("Searching sensors...");
 
+    if(sht31.begin(0x44)) //Test if Humidity sensor is there
+    {
+        foundSHT31 = true;
+        PL_("Found SHT31");
+        M5.Lcd.println("Found SHT31");
+        delay(5000);
+        M5.Lcd.clear();
+    }
+    //Test if Temperature-Only sensor is there
+    else if(sensor48.begin(i2cAddr) == true) // Function to check if the sensor will correctly self-identify with the proper Device ID/Address
+    {
+        foundTMP117 = true;
+        sensor48.setContinuousConversionMode();
+        PL_("Found TMP117");
+        M5.Lcd.println("Found TMP117");
+        delay(2000);
+        M5.Lcd.clear();
+    }
+    else //If nothing was detected then shut down
+    {
+        PL_("Couldn't find SHT31");
+        PL_("Couldn't find TMP117");
+        M5.Lcd.println("Couldn't find SHT31");
+        M5.Lcd.println("Couldn't find TMP117");
+        foundTMP117 = false;
+        foundSHT31 = false;
+        delay (10000);
+        M5.Lcd.clear();
+        M5.Lcd.setBrightness(0);
+        while (1);
+    }
+
+    //Access Point
     iotWebConf.addParameter(&Separator1);
 
     iotWebConf.addParameter(&ElsaHostName);
@@ -171,6 +239,10 @@ void setup()
     Serial.println("Ready.");
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////START OF MAIN LOOP//////////////////////////////////////////////////
+//  - Main loop should only execute the task schedulers for a well functioning MultiThreading
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void loop()
 {
     ts.execute();
@@ -178,13 +250,255 @@ void loop()
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////START OF SENSORS METHODS///////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void readSensorCallBack()
+{
+    PL_("tReadSensor");
+    if (foundSHT31 == true)
+    {
+        tReadSensor.setCallback(&processValuesSHT31);
+        /*Not quite sure if these should or shouldn't be callbacks.
+        They probably should in the case where we allow multiple sensors to be connected.
+        Then we would simply have IFs and not ELSE IFs right below here.
+        */
+    }
+    else if(foundTMP117 == true)
+    {
+        PL_("readSensorCallBack -- foundTMP117 == true");
+        tReadSensor.yield(&processValuesTMP117);
+    }
+}
+
+void processValuesSHT31()
+{
+    PL_("tReadSensor -- processValuesSHT31");
+    //on lit les informations de ce capteur
+    SHT31_T = sht31.readTemperature();
+    SHT31_T = floor(100*SHT31_T)/100; //rounding things to the second decimal.
+    SHT31_H = sht31.readHumidity();
+    SHT31_H = floor(100*SHT31_H)/100;
+    debugReadSHT31();
+    rewrite = !blank; //if blank = false then rewrite = true => if we are displaying stuff then we want to rewrite the value on the lcd (updates the value on screen)
+    tReadSensor.setCallback(&SHT31_DesignateDisplayColor);
+}
+
+void debugReadSHT31()
+{
+    if (!isnan(SHT31_T)) {  // check if 'is not a number'
+        Serial.print("SHT31_T = ");
+        Serial.print(SHT31_T);
+    }
+    else {
+        Serial.print("SHT31_T = null");
+    }
+
+    if (!isnan(SHT31_H)) {  // check if 'is not a number'
+        Serial.print("SHT31_H = ");
+        Serial.print(SHT31_H);
+    }
+    else {
+        Serial.print("SHT31_H = null");
+    }
+}
+
+void processValuesTMP117()
+{
+    PL_("tReadSensor -- processValuesTMP117");
+    //on lit les informations de ce capteur
+    TMP117_T = sensor48.readTempC();
+    TMP117_T = floor(100*TMP117_T)/100; //rounding things to the second decimal.
+    debugReadTMP117();
+    if(TMP117_T <= 0 && TMP117_T > -1.0 && sensor48.begin(i2cAddr) == false)// unplugging TMP117 gives negative value close to 0 whereas unplugging SHT31 gives NAN so we're checking that.
+    {
+        TMP117_T = NAN;
+    }
+    rewrite = !blank; //if blank == false then rewrite = true => if we are displaying stuff then we want to rewrite the value on the lcd (updates the value on screen)
+    tReadSensor.yield(&TMP117_DesignateDisplayColor);
+}
+
+void debugReadTMP117()
+{
+    Serial.print("TMP117_T = ");
+    if(!isnan(TMP117_T))
+        PP_(TMP117_T);
+    PL_("°C");
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////START OF DISPLAY METHODS///////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//SHT31
+void SHT31_DesignateDisplayColor()
+{
+    if (SHT31_T > prv_SHT31_T) {
+        prvColT = RED;
+    }
+    else if (SHT31_T < prv_SHT31_T) {
+        prvColT = BLUE;
+    }
+    else {
+        if (prvColT != WHITE && blank == false) rewrite = true;
+        //else rewrite = false; // If the values didn't change, then we don't want to update the LCD
+        prvColT = WHITE;
+    }
+
+    if (SHT31_H > prv_SHT31_H) {
+        prvColH = RED;
+    }
+    else if (SHT31_H < prv_SHT31_H) {
+        prvColH = BLUE;
+    }
+    else {
+        if (prvColH != WHITE && blank == false) rewrite = true;
+        //else rewrite = false; // If the values didn't change, then we don't want to update the LCD
+        prvColH = WHITE;
+    }
+    tReadSensor.setCallback(&SHT31_DisplayValues);
+}
+
+void SHT31_DisplayValues()
+{
+    if(rewrite)
+    {
+        M5.Lcd.clear();
+        //Display wifiFailedStatus
+        displayWiFiFailed();
+        //Display NTP
+        M5.Lcd.setCursor(0,130);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setFreeFont(&FreeSansBold18pt7b);
+        M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+        M5.Lcd.print(timeClient.getFormattedTime());
+        //Display values
+        M5.Lcd.setCursor(col+100,row);
+        if(SHT31_T<-30.00 || isnan(SHT31_T))//Set to yellow for errors as we consider anything below -30 as a bad input
+        {
+            M5.Lcd.setTextColor(TFT_YELLOW);
+        }
+        else
+        {
+            M5.Lcd.setTextColor(prvColT);
+        }
+        M5.Lcd.print(SHT31_T);
+        M5.Lcd.println("'C");
+        M5.Lcd.setCursor(col+100,150);
+        if(SHT31_H<-30.00 || isnan(SHT31_H))//Set to yellow for errors as we consider anything below -30 as a bad input
+        {
+            M5.Lcd.setTextColor(TFT_YELLOW);
+        }
+        else
+        {
+            M5.Lcd.setTextColor(prvColH);
+        }
+        M5.Lcd.print(SHT31_H);
+        M5.Lcd.println("'H");
+        //Color designation depends on the previously DISPLAYED value, not the previously measured one.
+        prv_SHT31_T = SHT31_T; //Used to know if the next measure is gonna be > or < current measure.
+        prv_SHT31_H = SHT31_H; //Used to know if the next measure is gonna be > or < current measure.
+    }
+    if (tReadSensor.getRunCounter() <= 1)
+    {
+        //Enable the tShutScreenOff task on the first run AFTER we show stuff to avoid having it just shut the screen off immediately.
+        tShutScreenOff.enableDelayed(TASK_MINUTE);
+    }
+    //tReadSensor.yield(&processValuesSHT31); //passes to the scheduler, next pass will be skipping the first step since we now know what sensor we are using.
+    tReadSensor.setCallback(&processValuesSHT31); //Looping the task
+    tReadSensor.delay(5 * TASK_SECOND);           //Same
+}
+//TMP117
+void TMP117_DesignateDisplayColor()
+{
+    if (TMP117_T > prv_TMP117_T) {
+        prvCol48 = RED;
+    }
+    else if (TMP117_T < prv_TMP117_T) {
+        prvCol48 = BLUE;
+        }
+    else {
+        if (prvCol48 != WHITE && blank == false) rewrite = true;
+        //else rewrite = false; // If the values didn't change, then we don't want to update the LCD
+        prvCol48 = WHITE;
+    }
+    tReadSensor.yield(&TMP117_DisplayValues);
+}
+
+void TMP117_DisplayValues()
+{
+    if(rewrite)
+    {
+        M5.Lcd.clear();
+        //Display wifiFailedStatus
+        displayWiFiFailed();
+        //Display NTP
+        M5.Lcd.setCursor(0,130);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setFreeFont(&FreeSansBold18pt7b);
+        M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+        M5.Lcd.print(timeClient.getFormattedTime());
+
+        M5.Lcd.setCursor(col+100,130);
+        if(TMP117_T<-30.00 || (TMP117_T <= -0.009 && TMP117_T >= -0.011) || isnan(TMP117_T))//Set to yellow for errors as we consider anything below -30 as a bad input. -0.01 being the value when sensor is not correctly connected.
+        {
+            M5.Lcd.setTextColor(TFT_YELLOW);
+        }
+        else
+        {
+            M5.Lcd.setTextColor(prvCol48);
+        }
+        M5.Lcd.print(TMP117_T);
+        M5.Lcd.println("'C");
+        //Color designation depends on the previously DISPLAYED value, not the previously measured one.
+        prv_TMP117_T = TMP117_T; //Used to know if the next measure is gonna be > or < current measure.
+    }
+    if (tReadSensor.getRunCounter() <= 1)
+    {
+        //Enable the tShutScreenOff task on the first run AFTER we show stuff to avoid having it just shut the screen off immediately.
+        tShutScreenOff.enableDelayed(TASK_MINUTE);
+    }
+    //tReadSensor.yield(&processValuesTMP117); //passes to the scheduler, next pass will be skipping the first step since we now know what sensor we are using.
+    tReadSensor.setCallback(&processValuesTMP117); //Looping the task
+    tReadSensor.delay(5 * TASK_SECOND);            //Same
+}
+
+void displayWiFiFailed()
+{
+    if(WiFiConnected != true)
+    {
+        M5.Lcd.setCursor(M5.Lcd.width()-170,M5.Lcd.height()-10);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
+        M5.Lcd.setTextColor(TFT_YELLOW);
+        M5.Lcd.println("WiFi not connected.");
+    }
+}
+
+void readButtonsStateCallBack()
+{
+    //PL_("T2ReadButtonsState");
+    M5.update();
+    if (M5.BtnA.wasReleased() || M5.BtnB.wasReleased() || M5.BtnC.wasReleased()) {
+        blank = false;
+        M5.Lcd.setBrightness(100);
+        tShutScreenOff.restartDelayed(TASK_MINUTE);
+    }
+}
+
+void shutScreenOffCallBack()
+{
+    PL_("tShutScreenOff");
+    //the screen "shuts down" after having shown the temperature for 60 seconds.
+    blank = true;
+    M5.Lcd.clear();
+    M5.Lcd.setBrightness(0);
+    //t3DisplayValuesLcd.disable();
+    tShutScreenOff.disable();//Do not repeat so that we are sure to always wait for 60 seconds
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////START OF IotWebConf CALLBACK METHODS///////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/**
- * Handle web requests to "/" path.
- */
-void handleRoot()
+void handleRoot()// Handle web requests to "/" path.
 {
   // -- Let IotWebConf test and handle captive portal requests.
   if (iotWebConf.handleCaptivePortal())
@@ -233,9 +547,8 @@ boolean formValidator()
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////END OF IotWebConf CALLBACK METHODS/////////////////////////////////////////
+///////////////////////////////////////////CONNECTION METHODS////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 void webConfLoopCallBack()
 {
     PL_("WebConf Loop");
@@ -248,12 +561,25 @@ void checkWebConfStatusCallBack()
     if(iotWebConf.getState() == 4)
     {
         PL_("WebConf Status == 4 => We are connected");
+        M5.Lcd.setCursor(0,20);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
+        M5.Lcd.setTextColor(TFT_WHITE);
+        M5.Lcd.println("Connected to WiFi...");
+        tReadSensor.delay(2000);//Delay this task to allow us to actually read what we wrote on the screen.
+        timeClient.begin();
         tWebConfLoop.setInterval(3*TASK_SECOND);
         tSendToElsa.enableDelayed();
         tCheckWebConfStatus.disable();
     }
     else{
         PL_("WebConf Status != 4 => We are NOT connected");
+        M5.Lcd.setCursor(0,20);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
+        M5.Lcd.setTextColor(TFT_WHITE);
+        M5.Lcd.println("Trying to connect to WiFi...");
+        //tReadSensor.delay(2000);//Delay this task to allow us to actually read what we wrote on the screen.
     }
 }
 
@@ -310,8 +636,18 @@ void getElsaCredentialsCallBack()
 
 }
 
-
-
+void aioTimeUpdBackgroundCallback()
+{
+    if(WiFi.status() == WL_CONNECTED)
+    {
+        PL_("tIoTimeUpd");
+        //io.run();
+        timeClient.update();
+    }
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////START OF DATA SENDING METHODS//////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void sendDataToElsaCallBack()
 {
     foundTMP117 = true;
@@ -337,10 +673,12 @@ void sendToElsa_TMP117()
         Serial.println("Sending HTTP request...");
         // Make a HTTP request:
         String url;
-        /*url = '/api.put!s_' + String(ElsaTemperatureSensorName) + '?value ='+ String(TMP117_T)
-            + "&control=" + String(calculateCheckSUM(ElsaTemperatureSensorName, TMP117_T));*/
-        url = "/api/put/!s_TMP117?value=" + String(25.00)
-            + "&control=" + String(calculateCheckSUM("TMP117", 25.00));
+        PP_("ElsaTemperatureSensorName : ");
+        PL_(ElsaTemperatureSensorName);
+        url = "/api/put/!s_" + ElsaTemperatureSensorName + "?value=" + String(TMP117_T)
+            + "&control=" + String(calculateCheckSUM(ElsaTemperatureSensorName, TMP117_T));
+        /*url = "/api/put/!s_TMP117?value=" + String(25.00)
+            + "&control=" + String(calculateCheckSUM("TMP117", 25.00));*/
         PP_("Sending data : GET ");
         PL_(url);
         client.get(url);
@@ -383,10 +721,10 @@ void sendToElsa_TMP117()
     client.stop();
     tSendToElsa.yield(&getElsaCredentialsCallBack);
 }
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////END OF DATA SENDING METHODS////////////////////////////////////////////
+////////////////////////////////////////////START OF GENERIC METHODS/////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// -- Generic methods
 bool isValidInput(String param) //If we don't put anything or if we type "NULL" then we don't want this parameter
 {
     if(param != "" && param != "NULL")
@@ -396,6 +734,28 @@ bool isValidInput(String param) //If we don't put anything or if we type "NULL" 
     else{
         return false;
     }
+}
+
+int calculateCheckSUM(String SensorName, float Value)
+{
+    Serial.println("Inside CheckSUM calculation");
+    String data = "!s"+SensorName+String(Value,2); //Conversion de float en arrondissant à la deuxième décimale.
+    Serial.println(data);
+    char charArray[data.length()+1];//[data.length()+1]//+1 car on a un caractère de fin de tableau. Seems useless tho?
+    data.toCharArray(charArray, data.length()+1);//copy content from string to charArray
+    for (int i = 0; i<data.length(); i++)
+    {
+         Serial.print(charArray[i]);
+    }
+    Serial.println();
+    int result = 0xABCD;
+    for (int i = 0; i<data.length(); i++)
+    {
+        result ^= (int)charArray[i];//Transformation en unicode : conversion du char en int.
+    }
+    Serial.println(result);
+    Serial.println("Outside CheckSUM calculation");
+    return result; //&& 0xFF;//On ne garde que le premier? octet.
 }
 
 void resetTaskForWiFiConnection (Task& dataSendingTask, PlatformUsed platformUsed)
@@ -421,24 +781,3 @@ void resetTaskForWiFiConnection (Task& dataSendingTask, PlatformUsed platformUse
     //tConnect.enableDelayed();
 }
 
-int calculateCheckSUM(String SensorName, float Value)
-{
-    Serial.println("Inside CheckSUM calculation");
-    String data = "!s"+SensorName+String(Value,2); //Conversion de float en arrondissant à la deuxième décimale.
-    Serial.println(data);
-    char charArray[data.length()+1];//[data.length()+1]//+1 car on a un caractère de fin de tableau. Seems useless tho?
-    data.toCharArray(charArray, data.length()+1);//copy content from string to charArray
-    for (int i = 0; i<data.length(); i++)
-    {
-         Serial.print(charArray[i]);
-    }
-    Serial.println();
-    int result = 0xABCD;
-    for (int i = 0; i<data.length(); i++)
-    {
-        result ^= (int)charArray[i];//Transformation en unicode : conversion du char en int.
-    }
-    Serial.println(result);
-    Serial.println("Outside CheckSUM calculation");
-    return result; //&& 0xFF;//On ne garde que le premier? octet.
-}
