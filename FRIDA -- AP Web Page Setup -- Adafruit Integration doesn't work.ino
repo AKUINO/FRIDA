@@ -621,8 +621,8 @@ boolean formValidator()
 void beforeConnectionStarts()
 {
     Serial.println("WiFi beforeConnectionStarts");
-   // WIFI_PASS = iotWebConf.getWifiPasswordParameter()->valueBuffer;
-    //WIFI_SSID = iotWebConf.getWifiSsidParameter()->valueBuffer;
+    WIFI_PASS = iotWebConf.getWifiPasswordParameter()->valueBuffer;
+    WIFI_SSID = iotWebConf.getWifiSsidParameter()->valueBuffer;
     PP_("WIFI credentials : ");
     PP_(WIFI_SSID);
     PP_(" + ");
@@ -695,7 +695,7 @@ void connectCheckCallBack()
 {
     Serial.println("WiFi connectCheckCallBack");
     if (WiFi.status() == WL_CONNECTED) {                // Connection established
-        tIotWebConfLoop.set(5*TASK_SECOND, TASK_FOREVER, &IotWebConfLoop);//slow down the AP
+        tIotWebConfLoop.set(2*TASK_SECOND, TASK_FOREVER, &IotWebConfLoop);//slow down the AP
         WiFiConnected = true;
         Serial.println("WiFi Connected : WL_CONNECTED");
         PL_();
