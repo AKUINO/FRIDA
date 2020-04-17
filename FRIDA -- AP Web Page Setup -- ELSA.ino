@@ -392,7 +392,7 @@ void SHT31_DisplayValues()
             M5.Lcd.setTextColor(prvColH);
         }
         M5.Lcd.print(SHT31_H);
-        M5.Lcd.println("'H");
+        M5.Lcd.println("%H");
         //Color designation depends on the previously DISPLAYED value, not the previously measured one.
         prv_SHT31_T = SHT31_T; //Used to know if the next measure is gonna be > or < current measure.
         prv_SHT31_H = SHT31_H; //Used to know if the next measure is gonna be > or < current measure.
@@ -650,10 +650,10 @@ void aioTimeUpdBackgroundCallback()
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void sendDataToElsaCallBack()
 {
-    foundTMP117 = true;
+    //foundTMP117 = true;
     if (foundSHT31)
     {
-        //sendToElsa_SHT31();
+        sendToElsa_SHT31();
     }
     if (foundTMP117)
     {
@@ -663,6 +663,103 @@ void sendDataToElsaCallBack()
         }
     }
 }
+void sendToElsa_SHT31()
+{
+    PL_("sendToElsa_SHT31");
+    PL_("Before if WiFi status == Connected");
+    if(WiFi.status() == WL_CONNECTED)//this is redundant, we may want to remove this protection as it is already made in initElsaCallBack().
+    {
+        if(SHT31_T>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
+        {
+            Serial.println("Sending HTTP request...");
+            // Make a HTTP request:
+            String url;
+            url = "/api/put/!s_" + ElsaTemperatureSensorName + "?value=" + String(SHT31_T)
+                + "&control=" + String(calculateCheckSUM(ElsaTemperatureSensorName, SHT31_T));
+            PP_("Sending data : GET ");
+            PL_(url);
+            client.get(url);
+            int statusCode = client.responseStatusCode();
+            String response = client.responseBody();
+            PP_("Status code: ");
+            PL_(statusCode);
+            PP_("Response: ");
+            PL_(response);
+
+            if(statusCode <199 || statusCode>299)
+            {
+                if(statusCode == 403)
+                {
+                    PL_("403 forbidden, bad checksum.");
+                }
+                else
+                {
+                    elsaTimeoutCounter ++;
+                    PL_("Elsa TimeOut");
+                    if(elsaTimeoutCounter >=10)
+                    {
+                        PL_("10 elsa Timeouts, trying to reconnect");
+                        elsaTimeoutCounter = 0;
+                        tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
+                        tSendToElsa.enableDelayed();
+                    }
+                    return;
+                }
+            }
+        }
+        tSendToElsa.delay(1000);
+        if(SHT31_H>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
+        {
+            Serial.println("Sending HTTP request...");
+            // Make a HTTP request:
+            String url;
+            url = "/api/put/!s_" + ElsaHumiditySensorName + "?value=" + String(SHT31_H)
+                + "&control=" + String(calculateCheckSUM(ElsaHumiditySensorName, SHT31_H));
+            PP_("Sending data : GET ");
+            PL_(url);
+            client.get(url);
+            int statusCode = client.responseStatusCode();
+            String response = client.responseBody();
+            PP_("Status code: ");
+            PL_(statusCode);
+            PP_("Response: ");
+            PL_(response);
+
+            if(statusCode <199 || statusCode>299)
+            {
+                if(statusCode == 403)
+                {
+                    PL_("403 forbidden, bad checksum.");
+                }
+                else
+                {
+                    elsaTimeoutCounter ++;
+                    PL_("Elsa TimeOut");
+                    if(elsaTimeoutCounter >=10)
+                    {
+                        PL_("10 elsa Timeouts, trying to reconnect");
+                        elsaTimeoutCounter = 0;
+                        tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
+                        tSendToElsa.enableDelayed();
+                    }
+                    return;
+                }
+            }
+        }
+        PL_();
+        PL_("closing connection");
+        elsaTimeoutCounter = 0;
+    }
+    else{
+        PL_("WiFi Status != WL_CONNECTED");
+        WiFiConnected = false;
+        resetTaskForWiFiConnection(tSendToElsa, Elsa);
+    }
+    client.stop();
+    tSendToElsa.yield(&getElsaCredentialsCallBack);
+}
+
+
 void sendToElsa_TMP117()
 {
     PL_("sendToElsa_TMP117");
