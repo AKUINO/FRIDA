@@ -145,7 +145,7 @@ Task tShutScreenOff(TASK_MINUTE, 1, &shutScreenOffCallBack, &ts, false);
 
 //IotWebConf
 Task tWebConfLoop(TASK_SECOND, TASK_FOREVER, &webConfLoopCallBack, &ts, true);
-Task tCheckWebConfStatus(TASK_SECOND, TASK_FOREVER, &checkWebConfStatusCallBack, &ts, true);
+Task tCheckWebConfStatus(10 * TASK_SECOND, 60, &checkWebConfStatusCallBack, &ts, true);// 60 iterations because we want it to try for 10 minutes then give up. When we give up, the AP will be shut down too.
 
 //NETWORK
 Task tIoTimeUpd(10 * TASK_SECOND, TASK_FOREVER, &aioTimeUpdBackgroundCallback, &ts, true);
@@ -181,7 +181,7 @@ void setup()
         PL_("Found SHT31");
         M5.Lcd.println("Found SHT31");
         delay(5000);
-        M5.Lcd.clear();
+        //M5.Lcd.clear();
     }
     //Test if Temperature-Only sensor is there
     else if(sensor48.begin(i2cAddr) == true) // Function to check if the sensor will correctly self-identify with the proper Device ID/Address
@@ -191,7 +191,7 @@ void setup()
         PL_("Found TMP117");
         M5.Lcd.println("Found TMP117");
         delay(5000);
-        M5.Lcd.clear();
+        //M5.Lcd.clear();
     }
     else //If nothing was detected then shut down
     {
@@ -237,7 +237,21 @@ void setup()
     server.on("/config", []{ iotWebConf.handleConfig(); });
     server.onNotFound([](){ iotWebConf.handleNotFound(); });
 
+    M5.Lcd.println("Press the two outer buttons to force AP mode.");
+
+    unsigned short period = 6000;
+    unsigned long currentMillis = 0;
+    M5.update();
+    delay(15000);
+    M5.update();
+    if (M5.BtnA.isPressed() && M5.BtnC.isPressed()) {
+        PL_("Requested AP mode");
+        iotWebConf.forceApMode(true);
+        M5.Lcd.println("Forcing AP mode.");
+        delay(2500);
+    }
     Serial.println("Ready.");
+    M5.Lcd.clear();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -534,8 +548,9 @@ void handleRoot()// Handle web requests to "/" path.
 
 void configSaved()
 {
-  Serial.println("Configuration was updated.");
-
+    Serial.println("Configuration was updated.");
+    iotWebConf.forceApMode(false);
+    tCheckWebConfStatus.enableIfNot();
 }
 
 boolean formValidator()
@@ -553,7 +568,10 @@ boolean formValidator()
 
   return valid;
 }
-
+void wifiConnected()
+{
+    Serial.println("WiFi was connected.");
+}
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////CONNECTION METHODS////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -562,6 +580,8 @@ void webConfLoopCallBack()
     PL_("WebConf Loop");
     // -- doLoop should be called as frequently as possible.
     iotWebConf.doLoop();
+    M5.update();
+
 }
 
 void checkWebConfStatusCallBack()
