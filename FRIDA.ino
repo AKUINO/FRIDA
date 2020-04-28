@@ -1,10 +1,4 @@
-#define IO_USERNAME "Insert AIO USERNAME HERE"
-#define IO_KEY "Insert AIO KEY HERE"
-
-#define WIFI_SSID "Insert WIFI SSID HERE"
-#define WIFI_PASS "Insert WIFI PWD HERE"
-
-#define CONNECT_TIMEOUT   30      // Seconds
+ #define CONNECT_TIMEOUT   30      // Seconds
 #define CONNECT_OK        0       // Status of successful connection to WiFi
 #define CONNECT_FAILED    (-99)   // Status of failed connection to WiFi
 // #define _TASK_TIMECRITICAL     // Enable monitoring scheduling overruns
@@ -24,7 +18,6 @@
 // Debug and Test options
 #define _DEBUG_
 //#define _TEST_
-
 #ifdef _DEBUG_
 #define PP_(a) Serial.print(a);
 #define PL_(a) Serial.println(a);
@@ -48,26 +41,32 @@
 #include <MCP41xxx.h>
 #include <WiFi.h>
 #include <NTPClient.h>
+#include <IotWebConf.h>
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////VARIABLES DECLARATION///////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-Scheduler ts;                                           //TASK SCHEDULER
+Scheduler ts;
+
 //NETWORK
+char* WIFI_SSID;
+char* WIFI_PASS;
 WiFiClient myWiFiClient;                                //CLIENT USED TO SEND HTTP REQUESTS TO ELSA
 const long utcOffsetInSeconds = 3600;                   //GMT +1
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
-HttpClient client = HttpClient(myWiFiClient, "phenics.gembloux.ulg.ac.be", 80);
+HttpClient client = HttpClient(myWiFiClient, "totototo.be", 80); //= HttpClient(myWiFiClient, "phenics.gembloux.ulg.ac.be", 80);
 
-AdafruitIO_WiFi io(IO_USERNAME, IO_KEY, WIFI_SSID, WIFI_PASS); //Since this declaration allows to easily do a WiFi.begin, we will only need to connect once with "io.connect" for communications with both Adafruit and Elsa
-AdafruitIO_Feed *feedSHT31_T = io.feed("SHT31_sonde température");
-AdafruitIO_Feed *feedSHT31_H = io.feed("SHT31_sonde humidité");
-AdafruitIO_Feed *feedTMP117 = io.feed("TMP117_sonde température");
+String ElsaServerURL;
+String ElsaTemperatureSensorName;
+String ElsaHumiditySensorName;
+bool ValidElsaCredentials = false;
 
 bool WiFiConnected = false;
 uint16_t elsaTimeoutCounter = 0;
 enum PlatformUsed { UNDEF, AdafruitIO, Elsa };
+int sendOnlineDelay = 1;
+
 //SENSORS
 Adafruit_SHT31 sht31 = Adafruit_SHT31();                //Humidity & Temperature sensor
 TMP117 sensor48;                                        //Initalize Temperature-only sensor
@@ -90,35 +89,67 @@ bool rewrite;
 float prv_TMP117_T = 0.0;
 int prvCol48 = WHITE;
 
+
+// -- Initial name of the Thing. Used e.g. as SSID of the own Access Point.
+const char initialThingName[] = "FRIDA";
+
+// -- Initial password to connect to the Thing, when it creates an own Access Point.
+const char wifiInitialApPassword[] = "12345678";
+
+#define STRING_LEN 128
+#define NUMBER_LEN 32
+
+void configSaved();
+boolean formValidator();
+
+DNSServer dnsServer;
+WebServer server(80);
+
+char ElsaHostnameValue[STRING_LEN];
+char ElsaSensorNameValue_Temperature[STRING_LEN];
+char ElsaSensorNameValue_Humidity[STRING_LEN];
+
+IotWebConf iotWebConf(initialThingName, &dnsServer, &server, wifiInitialApPassword);
+
+IotWebConfSeparator Separator1 = IotWebConfSeparator();
+
+IotWebConfParameter ElsaHostName = IotWebConfParameter("Elsa Hostname", "ElsaHostNameID", ElsaHostnameValue, STRING_LEN);
+IotWebConfParameter ElsaSensorName_Temperature = IotWebConfParameter("Elsa temperature sensor name", "ElsaSensorName_Temperature_ID", ElsaSensorNameValue_Temperature, STRING_LEN);
+IotWebConfParameter ElsaSensorName_Humidity = IotWebConfParameter("Elsa optional humidity sensor name", "ElsaSensorName_Humidity_ID", ElsaSensorNameValue_Humidity, STRING_LEN);
+
+
+// -- Configuration specific key. The value should be modified if config structure was changed.
+//#define CONFIG_VERSION "Alph"
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////TASKS AND CALLBACK METHODS/////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// -- Callback method declarations.
 //SENSORS & DISPLAY CALLBACK METHODS
 void readSensorCallBack();
-
 void readButtonsStateCallBack();
 void shutScreenOffCallBack();
 
 //NETWORK CALLBACK METHODS
-
-void connectInitCallBack();
 void aioTimeUpdBackgroundCallback();
 void initElsaCallBack();
-void initAdaCallBack();
 
+void webConfLoopCallBack();
+void checkWebConfStatusCallBack();
+void getElsaCredentialsCallBack();
 
+// -- TASKS
 //SENSORS & DISPLAY TASKS
 Task tReadSensor(5 * TASK_SECOND, TASK_FOREVER, &readSensorCallBack, &ts, true);
-
-Task tReadButtonsState(200, TASK_FOREVER, &readButtonsStateCallBack, &ts, true); //200 milliseconds
+Task tReadButtonsState(50, TASK_FOREVER, &readButtonsStateCallBack, &ts, true); //200 milliseconds delay
 Task tShutScreenOff(TASK_MINUTE, 1, &shutScreenOffCallBack, &ts, false);
 
-//NETWORK TASKS
+//IotWebConf
+Task tWebConfLoop(TASK_SECOND, TASK_FOREVER, &webConfLoopCallBack, &ts, true);
+Task tCheckWebConfStatus(TASK_SECOND, TASK_FOREVER, &checkWebConfStatusCallBack, &ts, true);
 
-Task tConnect(TASK_SECOND, TASK_FOREVER, &connectInitCallBack, &ts, true);
-Task tIoTimeUpd(10 * TASK_SECOND, TASK_FOREVER, &aioTimeUpdBackgroundCallback, &ts, false);
-Task tSendToElsa(&initElsaCallBack, &ts);
-Task tSendToAda(&initAdaCallBack, &ts);
+//NETWORK
+Task tIoTimeUpd(10 * TASK_SECOND, TASK_FOREVER, &aioTimeUpdBackgroundCallback, &ts, true);
+Task tSendToElsa(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack, &ts, false);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////START OF SETUP//////////////////////////////////////////////////////
@@ -130,18 +161,18 @@ void setup()
     #if defined(_DEBUG_) || defined(_TEST_)
     Serial.begin(115200);
     #endif
-    //TASKS
-    tSendToElsa.waitFor(tConnect.getInternalStatusRequest()); //initElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
-    tSendToAda.waitFor(tConnect.getInternalStatusRequest()); //Same with sendToAdaCallBack().
+    Serial.println("Starting up...");
     //M5STACK & SENSORS
     M5.begin(true,false,true); // init lcd, serial, but don't init sd card
     M5.Power.begin();
     M5.Lcd.setTextColor(TFT_WHITE,TFT_BLACK);
-    M5.Lcd.setTextSize(2);
+    M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
+    M5.Lcd.setCursor(0,20);
+    M5.Lcd.setTextSize(1);
     M5.Lcd.setRotation(3); //Invert the display
     M5.Lcd.setBrightness(100);
     M5.Lcd.clear();
-    M5.Lcd.setCursor(0,0);
+    //M5.Lcd.setCursor(0,20);
     M5.Lcd.println("Searching sensors...");
 
     if(sht31.begin(0x44)) //Test if Humidity sensor is there
@@ -159,7 +190,7 @@ void setup()
         sensor48.setContinuousConversionMode();
         PL_("Found TMP117");
         M5.Lcd.println("Found TMP117");
-        delay(2000);
+        delay(5000);
         M5.Lcd.clear();
     }
     else //If nothing was detected then shut down
@@ -175,35 +206,59 @@ void setup()
         M5.Lcd.setBrightness(0);
         while (1);
     }
-}
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////////////////END OF SETUP////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+    //Access Point
+    iotWebConf.addParameter(&Separator1);
+
+    iotWebConf.addParameter(&ElsaHostName);
+    iotWebConf.addParameter(&ElsaSensorName_Temperature);
+    iotWebConf.addParameter(&ElsaSensorName_Humidity);
+
+    iotWebConf.setConfigSavedCallback(&configSaved);
+    iotWebConf.setFormValidator(&formValidator);
+    iotWebConf.getApTimeoutParameter()->visible = true;
+    // -- Initializing the configuration.
+    iotWebConf.init();
+
+    /* USELESS SINCE THE AP WILL FALLBACK TO WIFI BY HIMSELF AFTER SOME TIME
+    if(M5.BtnA.read() == true && M5.BtnB.read() == true && M5.BtnC.read() == true )
+    {
+        //rename ThingName with initial Thing Name
+    }
+
+    if(iotWebConf.getThingNameParameter() != initialThingName)
+    {
+        iotWebConf.skipApStartup();
+    }
+    */
+
+    // -- Set up required URL handlers on the web server.
+    server.on("/", handleRoot);
+    server.on("/config", []{ iotWebConf.handleConfig(); });
+    server.onNotFound([](){ iotWebConf.handleNotFound(); });
+
+    Serial.println("Ready.");
+}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////START OF MAIN LOOP//////////////////////////////////////////////////
 //  - Main loop should only execute the task schedulers for a well functioning MultiThreading
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void loop ()
+void loop()
 {
-  ts.execute();
-}
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////////////////END OF MAIN LOOP////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ts.execute();
 
+}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////START OF SENSORS METHODS///////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 void readSensorCallBack()
 {
     PL_("tReadSensor");
     if (foundSHT31 == true)
     {
-        tReadSensor.setCallback(&processValuesSHT31);
+        tReadSensor.yield(&processValuesSHT31);
         /*Not quite sure if these should or shouldn't be callbacks.
         They probably should in the case where we allow multiple sensors to be connected.
         Then we would simply have IFs and not ELSE IFs right below here.
@@ -211,14 +266,14 @@ void readSensorCallBack()
     }
     else if(foundTMP117 == true)
     {
-        PL_("readSensorCallBack -- foundTMP117 == true");
+        //PL_("readSensorCallBack -- foundTMP117 == true");
         tReadSensor.yield(&processValuesTMP117);
     }
 }
 
 void processValuesSHT31()
 {
-    PL_("tReadSensor -- processValuesSHT31");
+    //PL_("tReadSensor -- processValuesSHT31");
     //on lit les informations de ce capteur
     SHT31_T = sht31.readTemperature();
     SHT31_T = floor(100*SHT31_T)/100; //rounding things to the second decimal.
@@ -250,7 +305,7 @@ void debugReadSHT31()
 
 void processValuesTMP117()
 {
-    PL_("tReadSensor -- processValuesTMP117");
+    //PL_("tReadSensor -- processValuesTMP117");
     //on lit les informations de ce capteur
     TMP117_T = sensor48.readTempC();
     TMP117_T = floor(100*TMP117_T)/100; //rounding things to the second decimal.
@@ -260,7 +315,7 @@ void processValuesTMP117()
         TMP117_T = NAN;
     }
     rewrite = !blank; //if blank == false then rewrite = true => if we are displaying stuff then we want to rewrite the value on the lcd (updates the value on screen)
-    tReadSensor.yield(&TMP117_DesignateDisplayColor);
+    tReadSensor.setCallback(&TMP117_DesignateDisplayColor);
 }
 
 void debugReadTMP117()
@@ -270,6 +325,7 @@ void debugReadTMP117()
         PP_(TMP117_T);
     PL_("°C");
 }
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////START OF DISPLAY METHODS///////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -299,7 +355,7 @@ void SHT31_DesignateDisplayColor()
         //else rewrite = false; // If the values didn't change, then we don't want to update the LCD
         prvColH = WHITE;
     }
-    tReadSensor.setCallback(&SHT31_DisplayValues);
+    tReadSensor.yield(&SHT31_DisplayValues);
 }
 
 void SHT31_DisplayValues()
@@ -326,7 +382,7 @@ void SHT31_DisplayValues()
             M5.Lcd.setTextColor(prvColT);
         }
         M5.Lcd.print(SHT31_T);
-        M5.Lcd.println("'C");
+        M5.Lcd.println("°C");
         M5.Lcd.setCursor(col+100,150);
         if(SHT31_H<-30.00 || isnan(SHT31_H))//Set to yellow for errors as we consider anything below -30 as a bad input
         {
@@ -337,19 +393,19 @@ void SHT31_DisplayValues()
             M5.Lcd.setTextColor(prvColH);
         }
         M5.Lcd.print(SHT31_H);
-        M5.Lcd.println("'H");
+        M5.Lcd.println("%H");
         //Color designation depends on the previously DISPLAYED value, not the previously measured one.
         prv_SHT31_T = SHT31_T; //Used to know if the next measure is gonna be > or < current measure.
         prv_SHT31_H = SHT31_H; //Used to know if the next measure is gonna be > or < current measure.
     }
-    if (tReadSensor.getRunCounter() <= 1)
+    if (tReadSensor.getRunCounter() <= 2) //2 because of the two setCallbacks instead of 2 yields
     {
         //Enable the tShutScreenOff task on the first run AFTER we show stuff to avoid having it just shut the screen off immediately.
         tShutScreenOff.enableDelayed(TASK_MINUTE);
     }
     //tReadSensor.yield(&processValuesSHT31); //passes to the scheduler, next pass will be skipping the first step since we now know what sensor we are using.
     tReadSensor.setCallback(&processValuesSHT31); //Looping the task
-    tReadSensor.delay(5 * TASK_SECOND);           //Same
+    //tReadSensor.delay(5 * TASK_SECOND);           //Same
 }
 //TMP117
 void TMP117_DesignateDisplayColor()
@@ -392,11 +448,11 @@ void TMP117_DisplayValues()
             M5.Lcd.setTextColor(prvCol48);
         }
         M5.Lcd.print(TMP117_T);
-        M5.Lcd.println("'C");
+        M5.Lcd.println("°C");
         //Color designation depends on the previously DISPLAYED value, not the previously measured one.
         prv_TMP117_T = TMP117_T; //Used to know if the next measure is gonna be > or < current measure.
     }
-    if (tReadSensor.getRunCounter() <= 1)
+    if (tReadSensor.getRunCounter() <= 2)
     {
         //Enable the tShutScreenOff task on the first run AFTER we show stuff to avoid having it just shut the screen off immediately.
         tShutScreenOff.enableDelayed(TASK_MINUTE);
@@ -410,11 +466,18 @@ void displayWiFiFailed()
 {
     if(WiFiConnected != true)
     {
-        M5.Lcd.setCursor(M5.Lcd.width()-170,M5.Lcd.height()-10);
+        M5.Lcd.setCursor(M5.Lcd.width()-200,M5.Lcd.height()-10);
         M5.Lcd.setTextSize(1);
         M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
         M5.Lcd.setTextColor(TFT_YELLOW);
-        M5.Lcd.println("WiFi not connected.");
+        M5.Lcd.println("Not connected to WiFi");
+    }
+    else{
+        M5.Lcd.setCursor(M5.Lcd.width()-170,M5.Lcd.height()-10);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
+        M5.Lcd.setTextColor(TFT_GREEN);
+        M5.Lcd.println("Connected to WiFi");
     }
 }
 
@@ -439,86 +502,149 @@ void shutScreenOffCallBack()
     //t3DisplayValuesLcd.disable();
     tShutScreenOff.disable();//Do not repeat so that we are sure to always wait for 60 seconds
 }
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////END OF DISPLAY METHODS/////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////START OF IotWebConf CALLBACK METHODS///////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void handleRoot()// Handle web requests to "/" path.
+{
+  // -- Let IotWebConf test and handle captive portal requests.
+  if (iotWebConf.handleCaptivePortal())
+  {
+    // -- Captive portal request were already served.
+    return;
+  }
+  String s = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
+  s += "<title>FRIDA Configuration</title></head><body>Welcome to FRIDA configuration !";
+  s += "<ul>";
+
+  s += "<li>ELSA Host: ";
+  s += ElsaHostnameValue;
+  s += "<li>ELSA Temperature Sensor : ";
+  s += ElsaSensorNameValue_Temperature;
+  s += "<li>ELSA Humidity Sensor : ";
+  s += ElsaSensorNameValue_Humidity;
+
+  s += "</ul>";
+  s += "Go to <a href='config'>configure page</a> to change values.";
+  s += "</body></html>\n";
+
+  server.send(200, "text/html", s);
+}
+
+void configSaved()
+{
+  Serial.println("Configuration was updated.");
+
+}
+
+boolean formValidator()
+{
+  Serial.println("Validating form.");
+  boolean valid = true;
+
+
+  int l = server.arg(ElsaHostName.getId()).length();
+  if (l < 5)
+  {
+    ElsaHostName.errorMessage = "Please provide at least 5 characters for this field !";
+    valid = false;
+  }
+
+  return valid;
+}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////CONNECTION METHODS////////////////////////////////////////////////////
-//  - connectInitCallBack : Initializes WiFi connection then sets tConnect to connectCheckCallBack()
-//  - connectCheckCallBack : Periodically check if connected to WiFi, Re-request connection every 5 seconds,
-//                   Stop trying after a timeout. Sets the StatusRequest for tSendToElsa
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void connectInitCallBack()
+void webConfLoopCallBack()
 {
-    Serial.println("WiFi connectInitCallBack");
-    //WiFi.begin(WIFI_SSID, WIFI_PASS);
-    //M5.Lcd.clear();
-    M5.Lcd.setCursor(0,20);
-    M5.Lcd.setTextSize(1);
-    M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
-    M5.Lcd.setTextColor(TFT_WHITE);
-    M5.Lcd.println("Connecting to WiFi...");
-    tReadSensor.delay(2000);//Delay this task to allow us to actually read what we wrote on the screen.
-    //Since this method already does a WiFi.begin, we will only need to connect once with "io.connect" for communications with both Adafruit and Elsa
-    PL_("Connecting to Adafruit IO");
-    io.connect();
-    //NTP :
-    timeClient.begin();
-    //yield(); //this is for another esp i think
-    tConnect.yield(&connectCheckCallBack); // This will pass control back to Scheduler and then continue with connection checking
+    PL_("WebConf Loop");
+    // -- doLoop should be called as frequently as possible.
+    iotWebConf.doLoop();
 }
 
-void connectCheckCallBack()
+void checkWebConfStatusCallBack()
 {
-    Serial.println("WiFi connectCheckCallBack");
-    if (WiFi.status() == WL_CONNECTED) {                // Connection established
-        WiFiConnected = true;
-        Serial.println("WiFi Connected : WL_CONNECTED");
-        PL_();
-        bool connectedToAda = false;
-        if(io.status() < AIO_CONNECTED)
-        {
-            PP_(io.statusText());
-            PP_(" CONNECTING to AdafruitIO...");
-            connectedToAda = false;
-            for(int i = 0; i<50; i++)
-            {
-               PP_(".");
-               if(i == 49)
-               {
-                   PL_();
-               }
-            }
-        }
-        else{
-            connectedToAda = true;
-        }
-        if(connectedToAda == true)
-        {
-            PL_(io.statusText());
-            M5.Lcd.setCursor(0,50);
-            M5.Lcd.setTextSize(1);
-            M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
-            M5.Lcd.setTextColor(TFT_WHITE);
-            M5.Lcd.println(io.statusText());
-            tReadSensor.delay(2000);//Delay this task to allow us to actually read what we wrote on the screen.
-            tIoTimeUpd.enableDelayed();
-            tConnect.disable(); //Task will no longer be executed
-        }
+    if(iotWebConf.getState() == 4)
+    {
+        PL_("WebConf Status == 4 => We are connected");
+        //M5.Lcd.clear();
+        M5.Lcd.setCursor(0,40);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
+        M5.Lcd.setTextColor(TFT_WHITE);
+        M5.Lcd.println("Connecting...");
+        tReadSensor.delay(2000);//Delay this task to allow us to actually read what we wrote on the screen.
+        timeClient.begin();
+        //tWebConfLoop.setInterval(3*TASK_SECOND);
+        tSendToElsa.enableDelayed();
+        tWebConfLoop.disable();
+        tCheckWebConfStatus.disable();
     }
     else{
-        Serial.println("WiFi Not Connected : !WL_CONNECTED");
-        if (tConnect.getRunCounter() % 5 == 0) {          // re-request connection every 5 seconds
-            WiFi.disconnect(true);
-            WiFi.begin(WIFI_SSID, WIFI_PASS);
+        PL_("WebConf Status != 4 => We are NOT connected");
+        M5.Lcd.setCursor(0,20);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
+        M5.Lcd.setTextColor(TFT_WHITE);
+        M5.Lcd.println("Trying to connect to WiFi...");
+        //tReadSensor.delay(2000);//Delay this task to allow us to actually read what we wrote on the screen.
+        tWebConfLoop.enableIfNot();
+    }
+}
+
+void getElsaCredentialsCallBack()
+{
+    PL_("getElsaCredentialsCallBack");
+
+    WIFI_PASS = iotWebConf.getWifiPasswordParameter()->valueBuffer;
+    WIFI_SSID = iotWebConf.getWifiSsidParameter()->valueBuffer;
+    PP_("WIFI credentials : ");
+    PP_(WIFI_SSID);
+    PP_(" + ");
+    PL_(WIFI_PASS);
+    if(WiFi.status() == WL_CONNECTED)
+    {
+        PL_("WiFi connected : WiFi.status == WL_CONNECTED");
+        WiFiConnected = true;
+        ElsaTemperatureSensorName = ElsaSensorNameValue_Temperature;
+        ElsaHumiditySensorName = ElsaSensorNameValue_Humidity;
+        if(isValidInput(ElsaHostnameValue))//redundant as the web form already asks for a minimum of 5 characters.
+        {
+            PP_("ELSA parameters : ");
+            PP_(ElsaHostnameValue);
+            PP_(" + ");
+            PP_(ElsaTemperatureSensorName);
+            PP_(" + ");
+            PP_(ElsaHumiditySensorName);
+            PL_(" .")
+            ValidElsaCredentials = true;
+            ElsaServerURL = ElsaHostnameValue;
+            client = HttpClient(myWiFiClient, ElsaServerURL, 80);
+
+            tSendToElsa.set(sendOnlineDelay * TASK_MINUTE, TASK_FOREVER, &sendDataToElsaCallBack);
+            //tSendToElsa.yield();
         }
-        if (tConnect.getRunCounter() == CONNECT_TIMEOUT) {  // Connection Timeout
-            Serial.println("WiFi Failed : CONNECT_TIMEOUT");
-            tConnect.getInternalStatusRequest()->signal(CONNECT_FAILED);  // Signal unsuccessful completion
+        else{
+            PL_("Invalid ELSA parameters");
+            PP_("Elsa parameters : ");
+            PP_(ElsaHostnameValue);
+            PP_(" + ");
+            PP_(ElsaTemperatureSensorName);
+            PP_(" + ");
+            PP_(ElsaHumiditySensorName);
+            PL_(" .")
         }
     }
+    else
+    {
+        PL_("Trying to connect to WiFi");
+        WiFiConnected = false;
+        WiFi.disconnect();
+        WiFi.begin(WIFI_SSID, WIFI_SSID);
+    }
+
 }
 
 void aioTimeUpdBackgroundCallback()
@@ -526,109 +652,16 @@ void aioTimeUpdBackgroundCallback()
     if(WiFi.status() == WL_CONNECTED)
     {
         PL_("tIoTimeUpd");
-        io.run();
+        //io.run();
         timeClient.update();
     }
 }
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////END OF CONNECTION METHODS//////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////START OF DATA SENDING METHODS//////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//ADAFRUIT IO
-void initAdaCallBack()
-{
-    Serial.println("Connection attempt To Ada : initElsaCallBack()");
-    if ( tConnect.getInternalStatusRequest()->getStatus() != CONNECT_OK ) {  // Check status of the tConnect Task
-        Serial.println("Cannot send to Ada -> not connected : WiFi !CONNECT_OK");
-        WiFiConnected = false;
-        resetTaskForWiFiConnection(tSendToAda, AdafruitIO);
-        return;
-    }
-    tSendToAda.set(TASK_MINUTE, TASK_FOREVER, &sendToAdaCallBack);
-    tSendToAda.enableDelayed();
-}
-
-void sendToAdaCallBack()
-{
-    if (foundSHT31)
-    {
-        sendToAda_SHT31();
-    }
-    if (foundTMP117)
-    {
-        if(TMP117_T>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
-        {
-            sendToAda_TMP117();
-        }
-    }
-}
-
-void sendToAda_SHT31()
-{
-    if(WiFi.status() == WL_CONNECTED)//Redundant as is is already done in initAdaCallBack(). We may want to remove this.
-    {
-        if(SHT31_T>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
-        {
-            Serial.print("sending -> SHT31_T ");
-            Serial.println(SHT31_T);
-            feedSHT31_T->save(SHT31_T);
-        }
-        if(SHT31_H>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
-        {
-            Serial.print("sending -> SHT31_H ");
-            Serial.println(SHT31_H);
-            feedSHT31_H->save(SHT31_H);
-        }
-    }
-    else //Adafruit IO's methods to check connectivity just seem to check the WiFi connection so this should be enough protection for now.
-    {
-        PL_("WiFi Status != WL_CONNECTED");
-        WiFiConnected = false;
-        resetTaskForWiFiConnection(tSendToAda, AdafruitIO);
-    }
-    client.stop();
-    tSendToAda.yield(&initAdaCallBack);
-}
-
-void sendToAda_TMP117()
-{
-    if(WiFi.status() == WL_CONNECTED)//Redundant as is is already done in initAdaCallBack(). We may want to remove this.
-    {
-        Serial.print("sending -> TMP117_T ");
-        Serial.println(TMP117_T);
-        feedTMP117->save(TMP117_T);
-    }
-    else //Adafruit IO's methods to check connectivity just seem to check the WiFi connection so this should be enough protection for now.
-    {
-        PL_("WiFi Status != WL_CONNECTED");
-        WiFiConnected = false;
-        resetTaskForWiFiConnection(tSendToAda, AdafruitIO);
-    }
-    client.stop();
-    tSendToAda.yield(&initAdaCallBack);
-}
-
-//ELSA
-void initElsaCallBack()
-{
-    Serial.println("Connection attempt To Elsa : initElsaCallBack()");
-    if ( tConnect.getInternalStatusRequest()->getStatus() != CONNECT_OK ) {  // Check status of the tConnect Task
-        Serial.println("Cannot send to Elsa -> not connected : WiFi !CONNECT_OK");
-        WiFiConnected = false;
-        resetTaskForWiFiConnection(tSendToElsa, Elsa);
-        return;
-    }
-    tSendToElsa.set(TASK_MINUTE, TASK_FOREVER, &sendDataToElsaCallBack);
-    tSendToElsa.enableDelayed();
-}
-
 void sendDataToElsaCallBack()
 {
+    //foundTMP117 = true;
     if (foundSHT31)
     {
         sendToElsa_SHT31();
@@ -641,8 +674,6 @@ void sendDataToElsaCallBack()
         }
     }
 }
-
-
 void sendToElsa_SHT31()
 {
     PL_("sendToElsa_SHT31");
@@ -654,36 +685,39 @@ void sendToElsa_SHT31()
             Serial.println("Sending HTTP request...");
             // Make a HTTP request:
             String url;
-            url = "/api/put/!s_SHT31T?value=" + String(SHT31_T)
-                + "&control=" + String(calculateCheckSUM("SHT31T", SHT31_T));
+            url = "/api/put/!s_" + ElsaTemperatureSensorName + "?value=" + String(SHT31_T)
+                + "&control=" + String(calculateCheckSUM(ElsaTemperatureSensorName, SHT31_T));
             PP_("Sending data : GET ");
             PL_(url);
             client.get(url);
-            int statusCode = client.responseStatusCode();
-            String response = client.responseBody();
-            PP_("Status code: ");
-            PL_(statusCode);
-            PP_("Response: ");
-            PL_(response);
-
-            if(statusCode <199 || statusCode>299)
+            if(client.available())
             {
-                if(statusCode == 403)
+                int statusCode = client.responseStatusCode();
+                String response = client.responseBody();
+                PP_("Status code: ");
+                PL_(statusCode);
+                PP_("Response: ");
+                PL_(response);
+                if(statusCode <199 || statusCode>299)
                 {
-                    PL_("403 forbidden, bad checksum.");
-                }
-                else
-                {
-                    elsaTimeoutCounter ++;
-                    PL_("Elsa TimeOut");
-                    if(elsaTimeoutCounter >=10)
+                    if(statusCode == 403)
                     {
-                        PL_("10 elsa Timeouts, trying to reconnect");
-                        elsaTimeoutCounter = 0;
-                        tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &initElsaCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
-                        tSendToElsa.enableDelayed();
+                        PL_("403 forbidden, bad checksum.");
                     }
-                    return;
+                    else
+                    {
+                        elsaTimeoutCounter ++;
+                        PL_("Elsa TimeOut");
+                        if(elsaTimeoutCounter >=10)
+                        {
+                            PL_("10 elsa Timeouts, trying to reconnect");
+                            elsaTimeoutCounter = 0;
+                            tSendToElsa.set(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
+                            tSendToElsa.enableDelayed();
+                        }
+                        client.stop();
+                        return;
+                    }
                 }
             }
         }
@@ -693,18 +727,85 @@ void sendToElsa_SHT31()
             Serial.println("Sending HTTP request...");
             // Make a HTTP request:
             String url;
-            url = "/api/put/!s_SHT31H?value=" + String(SHT31_H)
-                + "&control=" + String(calculateCheckSUM("SHT31H", SHT31_H));
+            url = "/api/put/!s_" + ElsaHumiditySensorName + "?value=" + String(SHT31_H)
+                + "&control=" + String(calculateCheckSUM(ElsaHumiditySensorName, SHT31_H));
             PP_("Sending data : GET ");
             PL_(url);
             client.get(url);
+            if(client.available())
+            {
+                int statusCode = client.responseStatusCode();
+                String response = client.responseBody();
+                PP_("Status code: ");
+                PL_(statusCode);
+                PP_("Response: ");
+                PL_(response);
+                if(statusCode <199 || statusCode>299)
+                {
+                    if(statusCode == 403)
+                    {
+                        PL_("403 forbidden, bad checksum.");
+                    }
+                    else
+                    {
+                        elsaTimeoutCounter ++;
+                        PL_("Elsa TimeOut");
+                        if(elsaTimeoutCounter >=10)
+                        {
+                            PL_("10 elsa Timeouts, trying to reconnect");
+                            elsaTimeoutCounter = 0;
+                            tSendToElsa.set(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
+                            tSendToElsa.enableDelayed();
+                        }
+                        client.stop();
+                        return;
+                    }
+                }
+            }
+        }
+        PL_();
+        PL_("closing connection");
+        elsaTimeoutCounter = 0;
+    }
+    else{
+        PL_("WiFi Status != WL_CONNECTED");
+        WiFiConnected = false;
+        resetTaskForWiFiConnection(tSendToElsa, Elsa);
+        client.stop();
+        return;
+    }
+    client.stop();
+    tSendToElsa.setCallback(&sendToElsa_SHT31);
+}
+
+
+void sendToElsa_TMP117()
+{
+    PL_("sendToElsa_TMP117");
+    PL_("Before if WiFi = connected");
+
+    if(WiFi.status() == WL_CONNECTED && isValidInput(ElsaTemperatureSensorName))//NOT REDUNDANT AS THE TASK WILL ALWAYS RESTART FROM sendToAdaCallBack() METHOD.
+    {
+        Serial.println("Sending HTTP request...");
+        // Make a HTTP request:
+        String url;
+        PP_("ElsaTemperatureSensorName : ");
+        PL_(ElsaTemperatureSensorName);
+        url = "/api/put/!s_" + ElsaTemperatureSensorName + "?value=" + String(TMP117_T)
+            + "&control=" + String(calculateCheckSUM(ElsaTemperatureSensorName, TMP117_T));
+        /*url = "/api/put/!s_TMP117?value=" + String(25.00)
+            + "&control=" + String(calculateCheckSUM("TMP117", 25.00));*/
+        PP_("Sending data : GET ");
+        PL_(url);
+        client.get(url);
+        if(client.available())
+        {
             int statusCode = client.responseStatusCode();
             String response = client.responseBody();
             PP_("Status code: ");
             PL_(statusCode);
             PP_("Response: ");
             PL_(response);
-
             if(statusCode <199 || statusCode>299)
             {
                 if(statusCode == 403)
@@ -719,9 +820,10 @@ void sendToElsa_SHT31()
                     {
                         PL_("10 elsa Timeouts, trying to reconnect");
                         elsaTimeoutCounter = 0;
-                        tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &initElsaCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
+                        tSendToElsa.set(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack); //this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
                         tSendToElsa.enableDelayed();
                     }
+                    client.stop();
                     return;
                 }
             }
@@ -734,93 +836,30 @@ void sendToElsa_SHT31()
         PL_("WiFi Status != WL_CONNECTED");
         WiFiConnected = false;
         resetTaskForWiFiConnection(tSendToElsa, Elsa);
+        client.stop();
+        return;
     }
     client.stop();
-    tSendToElsa.yield(&initElsaCallBack);
+    tSendToElsa.setCallback(&sendToElsa_TMP117);
 }
 
-void sendToElsa_TMP117()
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////START OF GENERIC METHODS/////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+bool isValidInput(String param) //If we don't put anything or if we type "NULL" then we don't want this parameter
 {
-    PL_("sendToElsa_TMP117");
-    PL_("Before if WiFi = connected");
-
-    if(WiFi.status() == WL_CONNECTED)//this is redundant, we may want to remove this protection as it is already made in initElsaCallBack().
+    if(param != "" && param != "NULL")
     {
-        Serial.println("Sending HTTP request...");
-        // Make a HTTP request:
-        String url;
-        url = "/api/put/!s_TMP117?value=" + String(TMP117_T)
-            + "&control=" + String(calculateCheckSUM("TMP117", TMP117_T));
-        PP_("Sending data : GET ");
-        PL_(url);
-        client.get(url);
-        int statusCode = client.responseStatusCode();
-        String response = client.responseBody();
-        PP_("Status code: ");
-        PL_(statusCode);
-        PP_("Response: ");
-        PL_(response);
-
-        if(statusCode <199 || statusCode>299)
-        {
-            if(statusCode == 403)
-            {
-                PL_("403 forbidden, bad checksum.");
-            }
-            else
-            {
-                elsaTimeoutCounter ++;
-                PL_("Elsa TimeOut");
-                if(elsaTimeoutCounter >=10)
-                {
-                    PL_("10 elsa Timeouts, trying to reconnect");
-                    elsaTimeoutCounter = 0;
-                    tSendToElsa.set(5 * TASK_SECOND, TASK_FOREVER, &initElsaCallBack); //this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
-                    tSendToElsa.enableDelayed();
-                }
-                return;
-            }
-        }
-        PL_();
-        PL_("closing connection");
-        elsaTimeoutCounter = 0;
+        return true;
     }
     else{
-        PL_("WiFi Status != WL_CONNECTED");
-        WiFiConnected = false;
-        resetTaskForWiFiConnection(tSendToElsa, Elsa);
+        return false;
     }
-    client.stop();
-    tSendToElsa.yield(&initElsaCallBack);
-}
-
-
-void resetTaskForWiFiConnection (Task& dataSendingTask, PlatformUsed platformUsed)
-{
-    switch (platformUsed) //Using a switch in case we want to add new possibilities in a future development. Btw, switch only allows integer/char so we use an ENUM which is basically hidden integers++++++++++
-    {
-        case AdafruitIO:
-            dataSendingTask.disable();
-            dataSendingTask.setCallback(&initAdaCallBack);
-            dataSendingTask.waitFor(tConnect.getInternalStatusRequest()); //connectToAdaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
-            break;
-        case Elsa:
-            dataSendingTask.disable();
-            dataSendingTask.setCallback(&initElsaCallBack);
-            dataSendingTask.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
-            break;
-        default:
-            PL_("resetTaskForWiFiConnection DEFAULT SWITCH, an error happened !");
-            //We might want to add all Tasks in charge of sending data to an online platform in an array and reset all these tasks here ?
-            break;
-    }
-    tConnect.setCallback(&connectInitCallBack); //Restarting WiFi connection
-    tConnect.enableDelayed();
 }
 
 int calculateCheckSUM(String SensorName, float Value)
 {
-  Serial.println("Inside CheckSUM calculation");
+    Serial.println("Inside CheckSUM calculation");
     String data = "!s"+SensorName+String(Value,2); //Conversion de float en arrondissant à la deuxième décimale.
     Serial.println(data);
     char charArray[data.length()+1];//[data.length()+1]//+1 car on a un caractère de fin de tableau. Seems useless tho?
@@ -839,6 +878,27 @@ int calculateCheckSUM(String SensorName, float Value)
     Serial.println("Outside CheckSUM calculation");
     return result; //&& 0xFF;//On ne garde que le premier? octet.
 }
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////END OF DATA SENDING METHODS////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void resetTaskForWiFiConnection (Task& dataSendingTask, PlatformUsed platformUsed)
+{
+    switch (platformUsed) //Using a switch in case we want to add new possibilities in a future development. Btw, switch only allows integer/char so we use an ENUM which is basically hidden integers
+    {
+        case AdafruitIO:
+            //dataSendingTask.disable();
+            //dataSendingTask.setCallback(&initAdaCallBack);
+            //dataSendingTask.waitFor(tConnect.getInternalStatusRequest()); //connectToAdaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+            break;
+        case Elsa:
+            //dataSendingTask.disable();
+            dataSendingTask.set(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack); //this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
+            //dataSendingTask.setCallback(&getElsaCredentialsCallBack);
+            //dataSendingTask.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
+            break;
+        default:
+            PL_("resetTaskForWiFiConnection DEFAULT SWITCH, an error happened !");
+            //We might want to add all Tasks in charge of sending data to an online platform in an array and reset all these tasks here ?
+            break;
+    }
+    //tConnect.setCallback(&connectInitCallBack); //Restarting WiFi connection from tConnect Task. If Adafruit or WiFi keeps failing, then this Task will relaunch the tBeforeConnectionStarts Task to check for new credentials.
+    //tConnect.enableDelayed();
+}
