@@ -1,9 +1,7 @@
- #define CONNECT_TIMEOUT   30      // Seconds
-#define CONNECT_OK        0       // Status of successful connection to WiFi
-#define CONNECT_FAILED    (-99)   // Status of failed connection to WiFi
+
 // #define _TASK_TIMECRITICAL     // Enable monitoring scheduling overruns
 //#define _TASK_SLEEP_ON_IDLE_RUN // Enable 1 ms SLEEP_IDLE powerdowns between tasks if no callback methods were invoked during the pass
-#define _TASK_STATUS_REQUEST      // Compile with support for StatusRequest functionality - triggering tasks on status change events in addition to time only
+//#define _TASK_STATUS_REQUEST      // Compile with support for StatusRequest functionality - triggering tasks on status change events in addition to time only
 // #define _TASK_WDT_IDS          // Compile with support for wdt control points and task ids
 // #define _TASK_LTS_POINTER      // Compile with support for local task storage pointer
 // #define _TASK_PRIORITY         // Support for layered scheduling priority
@@ -25,9 +23,7 @@
 #define PP_(a)
 #define PL_(a)
 #endif
-#define CONNECT_TIMEOUT   30      // Seconds
-#define CONNECT_OK        0       // Status of successful connection to WiFi
-#define CONNECT_FAILED    (-99)   // Status of failed connection to WiFi
+
 
 /*
 //  /!\ LES DEFINE RELATIFS AUX THREADS DOIVENT ETRE AVANT "include <TaskScheduler>" SINON APPAREMMENT CA PLANTE LES TASKS !
@@ -40,7 +36,8 @@
 #include <SparkFun_TMP117.h> // Used to send and receive specific information from our sensor
 #include <MCP41xxx.h>
 #include <WiFi.h>
-#include <NTPClient.h>
+//#include <NTPClient.h>
+#include <ezTime.h>
 #include <IotWebConf.h>
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -53,8 +50,13 @@ char* WIFI_SSID;
 char* WIFI_PASS;
 WiFiClient myWiFiClient;                                //CLIENT USED TO SEND HTTP REQUESTS TO ELSA
 const long utcOffsetInSeconds = 3600;                   //GMT +1
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+//WiFiUDP ntpUDP;
+//NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+Timezone selectedTimeZone;
+String defaultTimeRegion = "GMT";
+
+bool validTimeZone = true;
+
 HttpClient client = HttpClient(myWiFiClient, "totototo.be", 80); //= HttpClient(myWiFiClient, "phenics.gembloux.ulg.ac.be", 80);
 
 String ElsaServerURL;
@@ -65,7 +67,6 @@ bool ValidElsaCredentials = false;
 bool WiFiConnected = false;
 uint16_t elsaTimeoutCounter = 0;
 enum PlatformUsed { UNDEF, AdafruitIO, Elsa };
-int sendOnlineDelay = 1;
 
 //SENSORS
 Adafruit_SHT31 sht31 = Adafruit_SHT31();                //Humidity & Temperature sensor
@@ -89,7 +90,13 @@ bool rewrite;
 float prv_TMP117_T = 0.0;
 int prvCol48 = WHITE;
 
-
+//--Customisable delays
+const unsigned int DEFAULT_DELAY_tReadSensor = 5*TASK_SECOND;
+const unsigned int DEFAULT_DELAY_tShutScreenOff = 1*TASK_MINUTE;
+const unsigned int DEFAULT_DELAY_SendOnline = 10*TASK_SECOND;
+unsigned int CUSTOM_DELAY_tReadSensor = DEFAULT_DELAY_tReadSensor;
+unsigned int CUSTOM_DELAY_tShutScreenOff = DEFAULT_DELAY_tShutScreenOff;
+unsigned int CUSTOM_DELAY_SendOnline = DEFAULT_DELAY_SendOnline;
 // -- Initial name of the Thing. Used e.g. as SSID of the own Access Point.
 const char initialThingName[] = "FRIDA";
 
@@ -104,18 +111,31 @@ boolean formValidator();
 
 DNSServer dnsServer;
 WebServer server(80);
-
+//-- Time Zone
+char TimeZoneValue[STRING_LEN];
+//--Server parameters--
 char ElsaHostnameValue[STRING_LEN];
 char ElsaSensorNameValue_Temperature[STRING_LEN];
 char ElsaSensorNameValue_Humidity[STRING_LEN];
+//--FRIDA Tasks parameters (keyword "tp")--
+char tpNewMeasureDelayValue[NUMBER_LEN];
+char tpScreenOffDelayValue[NUMBER_LEN];
+char tpSendOnlineDelayValue[NUMBER_LEN];
 
 IotWebConf iotWebConf(initialThingName, &dnsServer, &server, wifiInitialApPassword);
 
+IotWebConfParameter TimeZone_Param = IotWebConfParameter("Time Zone (ex : \"Europe/Brussels\" or \"BE\"", "TimeZone_ParamID", TimeZoneValue, STRING_LEN);
 IotWebConfSeparator Separator1 = IotWebConfSeparator();
 
 IotWebConfParameter ElsaHostName = IotWebConfParameter("Elsa Hostname", "ElsaHostNameID", ElsaHostnameValue, STRING_LEN);
 IotWebConfParameter ElsaSensorName_Temperature = IotWebConfParameter("Elsa temperature sensor name", "ElsaSensorName_Temperature_ID", ElsaSensorNameValue_Temperature, STRING_LEN);
 IotWebConfParameter ElsaSensorName_Humidity = IotWebConfParameter("Elsa optional humidity sensor name", "ElsaSensorName_Humidity_ID", ElsaSensorNameValue_Humidity, STRING_LEN);
+
+IotWebConfSeparator Separator2 = IotWebConfSeparator();
+
+IotWebConfParameter tpNewMeasureDelay = IotWebConfParameter("New measure frequency (in minutes)", "tpNewMeasureDelayID", tpNewMeasureDelayValue, NUMBER_LEN);
+IotWebConfParameter tpScreenOffDelay = IotWebConfParameter("Screen active time (in minutes)", "tpScreenOffDelayID", tpScreenOffDelayValue, NUMBER_LEN);
+IotWebConfParameter tpSendOnlineDelay = IotWebConfParameter("Communication with the online platform delay (in minutes)", "tpSendOnlineDelayID", tpSendOnlineDelayValue, NUMBER_LEN);
 
 
 // -- Configuration specific key. The value should be modified if config structure was changed.
@@ -139,9 +159,9 @@ void getElsaCredentialsCallBack();
 
 // -- TASKS
 //SENSORS & DISPLAY TASKS
-Task tReadSensor(5 * TASK_SECOND, TASK_FOREVER, &readSensorCallBack, &ts, true);
+Task tReadSensor(DEFAULT_DELAY_tReadSensor, TASK_FOREVER, &readSensorCallBack, &ts, true);
 Task tReadButtonsState(50, TASK_FOREVER, &readButtonsStateCallBack, &ts, true); //200 milliseconds delay
-Task tShutScreenOff(TASK_MINUTE, 1, &shutScreenOffCallBack, &ts, false);
+Task tShutScreenOff(DEFAULT_DELAY_tShutScreenOff, 1, &shutScreenOffCallBack, &ts, false);
 
 //IotWebConf
 Task tWebConfLoop(TASK_SECOND, TASK_FOREVER, &webConfLoopCallBack, &ts, true);
@@ -149,7 +169,7 @@ Task tCheckWebConfStatus(10 * TASK_SECOND, 60, &checkWebConfStatusCallBack, &ts,
 
 //NETWORK
 Task tIoTimeUpd(10 * TASK_SECOND, TASK_FOREVER, &aioTimeUpdBackgroundCallback, &ts, true);
-Task tSendToElsa(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack, &ts, false);
+Task tSendToElsa(DEFAULT_DELAY_SendOnline, TASK_FOREVER, &getElsaCredentialsCallBack, &ts, false);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////START OF SETUP//////////////////////////////////////////////////////
@@ -206,13 +226,18 @@ void setup()
         M5.Lcd.setBrightness(0);
         while (1);
     }
-
+    selectedTimeZone.setLocation(defaultTimeRegion);
     //Access Point
+    iotWebConf.addParameter(&TimeZone_Param);
     iotWebConf.addParameter(&Separator1);
-
     iotWebConf.addParameter(&ElsaHostName);
     iotWebConf.addParameter(&ElsaSensorName_Temperature);
     iotWebConf.addParameter(&ElsaSensorName_Humidity);
+
+    iotWebConf.addParameter(&Separator2);
+    iotWebConf.addParameter(&tpNewMeasureDelay);
+    iotWebConf.addParameter(&tpScreenOffDelay);
+    iotWebConf.addParameter(&tpSendOnlineDelay);
 
     iotWebConf.setConfigSavedCallback(&configSaved);
     iotWebConf.setFormValidator(&formValidator);
@@ -239,10 +264,8 @@ void setup()
 
     M5.Lcd.println("Press the two outer buttons to force AP mode.");
 
-    unsigned short period = 6000;
-    unsigned long currentMillis = 0;
     M5.update();
-    delay(15000);
+    delay(10000);
     M5.update();
     if (M5.BtnA.isPressed() && M5.BtnC.isPressed()) {
         PL_("Requested AP mode");
@@ -250,6 +273,13 @@ void setup()
         M5.Lcd.println("Forcing AP mode.");
         delay(2500);
     }
+    PL_("VALUES : ");
+    PP_("CUSTOM_DELAY_tReadSensor :");
+    PL_(CUSTOM_DELAY_tReadSensor);
+    PP_("CUSTOM_DELAY_tShutScreenOff :");
+    PL_(CUSTOM_DELAY_tShutScreenOff);
+    PP_("CUSTOM_DELAY_SendOnline :");
+    PL_(CUSTOM_DELAY_SendOnline);
     Serial.println("Ready.");
     M5.Lcd.clear();
 }
@@ -384,7 +414,7 @@ void SHT31_DisplayValues()
         M5.Lcd.setTextSize(1);
         M5.Lcd.setFreeFont(&FreeSansBold18pt7b);
         M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
-        M5.Lcd.print(timeClient.getFormattedTime());
+        M5.Lcd.print(selectedTimeZone.dateTime("H:i:s "));//Display Hour, minutes, seconds
         //Display values
         M5.Lcd.setCursor(col+100,row);
         if(SHT31_T<-30.00 || isnan(SHT31_T))//Set to yellow for errors as we consider anything below -30 as a bad input
@@ -415,7 +445,7 @@ void SHT31_DisplayValues()
     if (tReadSensor.getRunCounter() <= 2) //2 because of the two setCallbacks instead of 2 yields
     {
         //Enable the tShutScreenOff task on the first run AFTER we show stuff to avoid having it just shut the screen off immediately.
-        tShutScreenOff.enableDelayed(TASK_MINUTE);
+        tShutScreenOff.enableDelayed(CUSTOM_DELAY_tShutScreenOff);
     }
     //tReadSensor.yield(&processValuesSHT31); //passes to the scheduler, next pass will be skipping the first step since we now know what sensor we are using.
     tReadSensor.setCallback(&processValuesSHT31); //Looping the task
@@ -450,7 +480,7 @@ void TMP117_DisplayValues()
         M5.Lcd.setTextSize(1);
         M5.Lcd.setFreeFont(&FreeSansBold18pt7b);
         M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
-        M5.Lcd.print(timeClient.getFormattedTime());
+        M5.Lcd.print(selectedTimeZone.dateTime("H:i:s "));//Display Hour, minutes, seconds
 
         M5.Lcd.setCursor(col+100,130);
         if(TMP117_T<-30.00 || (TMP117_T <= -0.009 && TMP117_T >= -0.011) || isnan(TMP117_T))//Set to yellow for errors as we consider anything below -30 as a bad input. -0.01 being the value when sensor is not correctly connected.
@@ -469,11 +499,11 @@ void TMP117_DisplayValues()
     if (tReadSensor.getRunCounter() <= 2)
     {
         //Enable the tShutScreenOff task on the first run AFTER we show stuff to avoid having it just shut the screen off immediately.
-        tShutScreenOff.enableDelayed(TASK_MINUTE);
+        tShutScreenOff.enableDelayed(CUSTOM_DELAY_tShutScreenOff);
     }
     //tReadSensor.yield(&processValuesTMP117); //passes to the scheduler, next pass will be skipping the first step since we now know what sensor we are using.
     tReadSensor.setCallback(&processValuesTMP117); //Looping the task
-    tReadSensor.delay(5 * TASK_SECOND);            //Same
+    //tReadSensor.delay(5 * TASK_SECOND);            //Same
 }
 
 void displayWiFiFailed()
@@ -494,6 +524,17 @@ void displayWiFiFailed()
         M5.Lcd.println("Connected to WiFi");
     }
 }
+void displayInvalidTimeZone()
+{
+    if(validTimeZone != true)
+    {
+        M5.Lcd.setCursor(M5.Lcd.width()-300,M5.Lcd.height()-30);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
+        M5.Lcd.setTextColor(TFT_YELLOW);
+        M5.Lcd.println("Invalid time zone, using default time zone instead");
+    }
+}
 
 void readButtonsStateCallBack()
 {
@@ -502,7 +543,8 @@ void readButtonsStateCallBack()
     if (M5.BtnA.wasReleased() || M5.BtnB.wasReleased() || M5.BtnC.wasReleased()) {
         blank = false;
         M5.Lcd.setBrightness(100);
-        tShutScreenOff.restartDelayed(TASK_MINUTE);
+        tShutScreenOff.restartDelayed(CUSTOM_DELAY_tShutScreenOff);
+        tReadSensor.forceNextIteration();
     }
 }
 
@@ -580,7 +622,12 @@ void webConfLoopCallBack()
     PL_("WebConf Loop");
     // -- doLoop should be called as frequently as possible.
     iotWebConf.doLoop();
-    M5.update();
+
+    if(tWebConfLoop.isFirstIteration() == true)
+    {
+        PL_("LOAD");
+        //loadTaskParameters();
+    }
 
 }
 
@@ -596,11 +643,14 @@ void checkWebConfStatusCallBack()
         M5.Lcd.setTextColor(TFT_WHITE);
         M5.Lcd.println("Connecting...");
         tReadSensor.delay(2000);//Delay this task to allow us to actually read what we wrote on the screen.
-        timeClient.begin();
+        //timeClient.begin();
+        initNTP();
         //tWebConfLoop.setInterval(3*TASK_SECOND);
-        tSendToElsa.enableDelayed();
+        tSendToElsa.enableDelayed(DEFAULT_DELAY_SendOnline);
+        loadTaskParameters();//load them after so the first tSendToElsa iteration happens after the default time
         tWebConfLoop.disable();
         tCheckWebConfStatus.disable();
+        return;//prevents the next IF to happen.
     }
     else{
         PL_("WebConf Status != 4 => We are NOT connected");
@@ -612,9 +662,35 @@ void checkWebConfStatusCallBack()
         //tReadSensor.delay(2000);//Delay this task to allow us to actually read what we wrote on the screen.
         tWebConfLoop.enableIfNot();
     }
+    /*if(tCheckWebConfStatus.getRunCounter() % 5 == 0 && isValidDelay(tpNewMeasureDelayValue) && isValidDelay(tpScreenOffDelayValue) && isValidDelay(tpSendOnlineDelayValue))//try every 5 iterations to load new parameters to make sure we end up loading them even if we can't connect to WiFi.
+    {
+        loadTaskParameters();
+    }*/
 }
-
-void getElsaCredentialsCallBack()
+void initNTP()
+{
+    String TZ = TimeZoneValue;
+    if(isValidInput(TZ))
+    {
+        if(selectedTimeZone.setLocation(TZ))
+        {
+            PL_("NTP good");
+            validTimeZone = true;
+            selectedTimeZone.setLocation(TZ);
+            //selectedTimeZone.updateNTP();
+        }
+        else{
+            PL_("NTP BAD");
+            selectedTimeZone.setLocation(defaultTimeRegion);
+            validTimeZone = false;
+        }
+    }
+    else{
+        PL_("NTP Default");
+        selectedTimeZone.setLocation(defaultTimeRegion);//don't report error as the user simply left the parameter empty so he wants to use the default setting.
+    }
+}
+void getElsaCredentialsCallBack()//initializing phase
 {
     PL_("getElsaCredentialsCallBack");
 
@@ -643,7 +719,7 @@ void getElsaCredentialsCallBack()
             ElsaServerURL = ElsaHostnameValue;
             client = HttpClient(myWiFiClient, ElsaServerURL, 80);
 
-            tSendToElsa.set(sendOnlineDelay * TASK_MINUTE, TASK_FOREVER, &sendDataToElsaCallBack);
+            tSendToElsa.set(CUSTOM_DELAY_SendOnline * TASK_MINUTE, TASK_FOREVER, &sendDataToElsaCallBack);
             //tSendToElsa.yield();
         }
         else{
@@ -673,7 +749,8 @@ void aioTimeUpdBackgroundCallback()
     {
         PL_("tIoTimeUpd");
         //io.run();
-        timeClient.update();
+        //timeClient.update();
+        events();
     }
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -698,7 +775,7 @@ void sendToElsa_SHT31()
 {
     PL_("sendToElsa_SHT31");
     PL_("Before if WiFi status == Connected");
-    if(WiFi.status() == WL_CONNECTED)//this is redundant, we may want to remove this protection as it is already made in initElsaCallBack().
+    if(WiFi.status() == WL_CONNECTED)//Safety measure since the task will not fall back to initializing phase until something goes wrong.
     {
         if(SHT31_T>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
         {
@@ -732,8 +809,7 @@ void sendToElsa_SHT31()
                         {
                             PL_("10 elsa Timeouts, trying to reconnect");
                             elsaTimeoutCounter = 0;
-                            tSendToElsa.set(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
-                            tSendToElsa.enableDelayed();
+                            resetTaskForWiFiConnection(tSendToElsa, Elsa);//this means the Task will re check WiFi connection then fall back to AP mode if needed. This is just a safety measure in case WiFi connection lost in the middle of the process.
                         }
                         client.stop();
                         return;
@@ -774,8 +850,7 @@ void sendToElsa_SHT31()
                         {
                             PL_("10 elsa Timeouts, trying to reconnect");
                             elsaTimeoutCounter = 0;
-                            tSendToElsa.set(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack);//this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
-                            tSendToElsa.enableDelayed();
+                            resetTaskForWiFiConnection(tSendToElsa, Elsa);//this means the Task will re check WiFi connection then fall back to AP mode if needed. This is just a safety measure in case WiFi connection lost in the middle of the process.
                         }
                         client.stop();
                         return;
@@ -804,7 +879,7 @@ void sendToElsa_TMP117()
     PL_("sendToElsa_TMP117");
     PL_("Before if WiFi = connected");
 
-    if(WiFi.status() == WL_CONNECTED && isValidInput(ElsaTemperatureSensorName))//NOT REDUNDANT AS THE TASK WILL ALWAYS RESTART FROM sendToAdaCallBack() METHOD.
+    if(WiFi.status() == WL_CONNECTED && isValidInput(ElsaTemperatureSensorName))//Safety measure since the task will not fall back to initializing phase until something goes wrong.
     {
         Serial.println("Sending HTTP request...");
         // Make a HTTP request:
@@ -840,8 +915,7 @@ void sendToElsa_TMP117()
                     {
                         PL_("10 elsa Timeouts, trying to reconnect");
                         elsaTimeoutCounter = 0;
-                        tSendToElsa.set(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack); //this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
-                        tSendToElsa.enableDelayed();
+                        resetTaskForWiFiConnection(tSendToElsa, Elsa);//this means the Task will re check WiFi connection then fall back to AP mode if needed. This is just a safety measure in case WiFi connection lost in the middle of the process.
                     }
                     client.stop();
                     return;
@@ -910,7 +984,7 @@ void resetTaskForWiFiConnection (Task& dataSendingTask, PlatformUsed platformUse
             break;
         case Elsa:
             //dataSendingTask.disable();
-            dataSendingTask.set(10 * TASK_SECOND, TASK_FOREVER, &getElsaCredentialsCallBack); //this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
+            dataSendingTask.set(DEFAULT_DELAY_SendOnline, TASK_FOREVER, &getElsaCredentialsCallBack); //this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
             //dataSendingTask.setCallback(&getElsaCredentialsCallBack);
             //dataSendingTask.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
             break;
@@ -921,4 +995,54 @@ void resetTaskForWiFiConnection (Task& dataSendingTask, PlatformUsed platformUse
     }
     //tConnect.setCallback(&connectInitCallBack); //Restarting WiFi connection from tConnect Task. If Adafruit or WiFi keeps failing, then this Task will relaunch the tBeforeConnectionStarts Task to check for new credentials.
     //tConnect.enableDelayed();
+}
+
+void loadTaskParameters()
+{
+    if(isValidDelay(tpNewMeasureDelayValue))
+    {
+        CUSTOM_DELAY_tReadSensor = atoi(tpNewMeasureDelayValue) * TASK_SECOND;
+        tReadSensor.setInterval(CUSTOM_DELAY_tReadSensor);// Do it here because the interval is never updated elsewhere in the code.
+        tReadSensor.restartDelayed();
+        //selectedTimeZone.setInterval(CUSTOM_DELAY_tReadSensor-1);//NTP querry every time we refresh the screen.
+    }
+    else{
+        CUSTOM_DELAY_tReadSensor = DEFAULT_DELAY_tReadSensor;
+    }
+
+    if(isValidDelay(tpSendOnlineDelayValue))
+    {
+        CUSTOM_DELAY_SendOnline = atoi(tpSendOnlineDelayValue) * TASK_MINUTE;// Don't set interval here as depending on what phase the task is, we don't want to use the same delay (could conflict with the very short delay we want at the initiations of the task)
+    }
+    else{
+        CUSTOM_DELAY_SendOnline = DEFAULT_DELAY_SendOnline;
+    }
+
+    if(isValidDelay(tpScreenOffDelayValue))
+    {
+        CUSTOM_DELAY_tShutScreenOff = atoi(tpScreenOffDelayValue) * TASK_MINUTE;
+        tShutScreenOff.setInterval(CUSTOM_DELAY_tShutScreenOff);// Do it here anyway just so it is done and we're sure the next iteration of this task will be with the right delay.
+        tShutScreenOff.restartDelayed();
+    }
+    else{
+        CUSTOM_DELAY_tShutScreenOff = DEFAULT_DELAY_tShutScreenOff;
+    }
+
+    PL_("VALUES : ");
+        PP_("CUSTOM_DELAY_tReadSensor :");
+        PL_(CUSTOM_DELAY_tReadSensor);
+        PP_("CUSTOM_DELAY_tShutScreenOff :");
+        PL_(CUSTOM_DELAY_tShutScreenOff);
+        PP_("CUSTOM_DELAY_SendOnline :");
+        PL_(CUSTOM_DELAY_SendOnline);
+}
+
+bool isValidDelay(char* param)//USELESS, doesn't work smh
+{/*
+    if(!isDigit(param[1]))
+    {
+        PL_("INVALID PARAM");
+        return false;
+    }*/
+    return true;
 }
