@@ -262,10 +262,10 @@ void setup()
     server.on("/config", []{ iotWebConf.handleConfig(); });
     server.onNotFound([](){ iotWebConf.handleNotFound(); });
 
-    M5.Lcd.println("Press the two outer buttons to force AP mode.");
+    M5.Lcd.println("Keep the two outer buttons pressed to force AP mode.");
 
     M5.update();
-    delay(10000);
+    delay(10000);//M5.BtnA.PressedFor() doesn't work in the setup so we just add a delay for the user to read the screen then press the buttons.
     M5.update();
     if (M5.BtnA.isPressed() && M5.BtnC.isPressed()) {
         PL_("Requested AP mode");
@@ -1001,7 +1001,7 @@ void loadTaskParameters()
 {
     if(isValidDelay(tpNewMeasureDelayValue))
     {
-        CUSTOM_DELAY_tReadSensor = atoi(tpNewMeasureDelayValue) * TASK_SECOND;
+        CUSTOM_DELAY_tReadSensor = atoi(tpNewMeasureDelayValue) * TASK_MINUTE;
         tReadSensor.setInterval(CUSTOM_DELAY_tReadSensor);// Do it here because the interval is never updated elsewhere in the code.
         tReadSensor.restartDelayed();
         //selectedTimeZone.setInterval(CUSTOM_DELAY_tReadSensor-1);//NTP querry every time we refresh the screen.
