@@ -786,8 +786,8 @@ void sendToElsa_SHT31()
             PP_("Sending data : GET ");
             PL_(url);
             client.get(url);
-            if(client.available())
-            {
+            //if(client.available())
+            //{
                 int statusCode = client.responseStatusCode();
                 String response = client.responseBody();
                 PP_("Status code: ");
@@ -814,10 +814,10 @@ void sendToElsa_SHT31()
                         return;
                     }
                 }
-            }
-            else{
-                PL_("WiFi Client not available");
-            }
+            //}
+            //else{
+            //   PL_("WiFi Client not available");
+            //}
         }
         tSendToElsa.delay(1000);
         if(SHT31_H>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
@@ -830,8 +830,8 @@ void sendToElsa_SHT31()
             PP_("Sending data : GET ");
             PL_(url);
             client.get(url);
-            if(client.available())
-            {
+            //if(client.available())
+           // {
                 int statusCode = client.responseStatusCode();
                 String response = client.responseBody();
                 PP_("Status code: ");
@@ -858,10 +858,10 @@ void sendToElsa_SHT31()
                         return;
                     }
                 }
-            }
-            else{
-                PL_("WiFi Client not available");
-            }
+            //}
+            //else{
+            //    PL_("WiFi Client not available");
+            //}
         }
         PL_();
         PL_("closing connection");
@@ -899,7 +899,7 @@ void sendToElsa_TMP117()
         PL_(url);
         client.get(url);
         //if(client.available())
-       // {
+       //{
             int statusCode = client.responseStatusCode();
             String response = client.responseBody();
             PP_("Status code: ");
