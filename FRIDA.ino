@@ -265,7 +265,7 @@ void setup()
 
     loadTaskParameters();
 
-    M5.Lcd.println("Keep the two outer buttons pressed to force AP mode.");
+    M5.Lcd.println("Keep the outer buttons pressed to force setup.");
 
     M5.update();
     delay(10000);//M5.BtnA.PressedFor() doesn't work in the setup so we just add a delay for the user to read the screen then press the buttons.
@@ -276,13 +276,6 @@ void setup()
         M5.Lcd.println("Forcing AP mode.");
         delay(2500);
     }
-    PL_("VALUES : ");
-    PP_("CUSTOM_DELAY_tReadSensor :");
-    PL_(CUSTOM_DELAY_tReadSensor);
-    PP_("CUSTOM_DELAY_tShutScreenOff :");
-    PL_(CUSTOM_DELAY_tShutScreenOff);
-    PP_("CUSTOM_DELAY_SendOnline :");
-    PL_(CUSTOM_DELAY_SendOnline);
     Serial.println("Ready.");
     M5.Lcd.clear();
 }
@@ -328,7 +321,7 @@ void processValuesSHT31()
     SHT31_H = floor(100*SHT31_H)/100;
     debugReadSHT31();
     rewrite = !blank; //if blank = false then rewrite = true => if we are displaying stuff then we want to rewrite the value on the lcd (updates the value on screen)
-    tReadSensor.setCallback(&SHT31_DesignateDisplayColor);
+    tReadSensor.yield(&SHT31_DesignateDisplayColor);//if setcallback then delay is x2 for the task.
 }
 
 void debugReadSHT31()
@@ -362,7 +355,7 @@ void processValuesTMP117()
         TMP117_T = NAN;
     }
     rewrite = !blank; //if blank == false then rewrite = true => if we are displaying stuff then we want to rewrite the value on the lcd (updates the value on screen)
-    tReadSensor.setCallback(&TMP117_DesignateDisplayColor);
+    tReadSensor.yield(&TMP117_DesignateDisplayColor);//if setcallback then delay is x2 for the task.
 }
 
 void debugReadTMP117()
@@ -413,6 +406,7 @@ void SHT31_DisplayValues()
         //Display wifiFailedStatus
         displayWiFiFailed();
         //Display NTP
+        displayInvalidTimeZone();
         M5.Lcd.setCursor(0,130);
         M5.Lcd.setTextSize(1);
         M5.Lcd.setFreeFont(&FreeSansBold18pt7b);
@@ -479,6 +473,7 @@ void TMP117_DisplayValues()
         //Display wifiFailedStatus
         displayWiFiFailed();
         //Display NTP
+        displayInvalidTimeZone();
         M5.Lcd.setCursor(0,130);
         M5.Lcd.setTextSize(1);
         M5.Lcd.setFreeFont(&FreeSansBold18pt7b);
@@ -531,11 +526,11 @@ void displayInvalidTimeZone()
 {
     if(validTimeZone != true)
     {
-        M5.Lcd.setCursor(M5.Lcd.width()-300,M5.Lcd.height()-30);
+        M5.Lcd.setCursor(M5.Lcd.width()-170,M5.Lcd.height()-30);
         M5.Lcd.setTextSize(1);
         M5.Lcd.setFreeFont(&FreeSansBold9pt7b);
         M5.Lcd.setTextColor(TFT_YELLOW);
-        M5.Lcd.println("Invalid time zone, using default time zone instead");
+        M5.Lcd.println("Invalid time zone");
     }
 }
 
@@ -683,13 +678,14 @@ void initNTP()
             //selectedTimeZone.updateNTP();
         }
         else{
-            PL_("NTP BAD");
+            PL_("NTP invalid");
             selectedTimeZone.setLocation(defaultTimeRegion);
             validTimeZone = false;
         }
     }
     else{
         PL_("NTP Default");
+        validTimeZone = false;
         selectedTimeZone.setLocation(defaultTimeRegion);//don't report error as the user simply left the parameter empty so he wants to use the default setting.
     }
 }
@@ -722,7 +718,7 @@ void getElsaCredentialsCallBack()//initializing phase
             ElsaServerURL = ElsaHostnameValue;
             client = HttpClient(myWiFiClient, ElsaServerURL, 80);
 
-            tSendToElsa.set(CUSTOM_DELAY_SendOnline * TASK_MINUTE, TASK_FOREVER, &sendDataToElsaCallBack);
+            tSendToElsa.set(CUSTOM_DELAY_SendOnline, TASK_FOREVER, &sendDataToElsaCallBack);
             //tSendToElsa.yield();
         }
         else{
@@ -819,6 +815,9 @@ void sendToElsa_SHT31()
                     }
                 }
             }
+            else{
+                PL_("WiFi Client not available");
+            }
         }
         tSendToElsa.delay(1000);
         if(SHT31_H>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
@@ -860,6 +859,9 @@ void sendToElsa_SHT31()
                     }
                 }
             }
+            else{
+                PL_("WiFi Client not available");
+            }
         }
         PL_();
         PL_("closing connection");
@@ -872,7 +874,7 @@ void sendToElsa_SHT31()
         client.stop();
         return;
     }
-    client.stop();
+    //client.stop();
     tSendToElsa.setCallback(&sendToElsa_SHT31);
 }
 
@@ -896,8 +898,8 @@ void sendToElsa_TMP117()
         PP_("Sending data : GET ");
         PL_(url);
         client.get(url);
-        if(client.available())
-        {
+        //if(client.available())
+       // {
             int statusCode = client.responseStatusCode();
             String response = client.responseBody();
             PP_("Status code: ");
@@ -924,7 +926,10 @@ void sendToElsa_TMP117()
                     return;
                 }
             }
-        }
+        //}
+        //else{
+        //    PL_("WiFi Client not available");
+       // }
         PL_();
         PL_("closing connection");
         elsaTimeoutCounter = 0;
@@ -936,7 +941,7 @@ void sendToElsa_TMP117()
         client.stop();
         return;
     }
-    client.stop();
+    //client.stop();
     tSendToElsa.setCallback(&sendToElsa_TMP117);
 }
 
@@ -1006,12 +1011,15 @@ void loadTaskParameters()
     {
         CUSTOM_DELAY_tReadSensor = atoi(tpNewMeasureDelayValue) * TASK_MINUTE;
         tReadSensor.setInterval(CUSTOM_DELAY_tReadSensor);// Do it here because the interval is never updated elsewhere in the code.
+        tReadSensor.disable();
         tReadSensor.restartDelayed();
         //selectedTimeZone.setInterval(CUSTOM_DELAY_tReadSensor-1);//NTP querry every time we refresh the screen.
     }
     else{
         PL_("Invalid param : tpNewMeasureDelayValue");
         CUSTOM_DELAY_tReadSensor = DEFAULT_DELAY_tReadSensor;
+        tReadSensor.disable();
+        tReadSensor.restartDelayed();
     }
 
     if(isValidDelay(tpSendOnlineDelayValue))
@@ -1027,28 +1035,27 @@ void loadTaskParameters()
     {
         CUSTOM_DELAY_tShutScreenOff = atoi(tpScreenOffDelayValue) * TASK_MINUTE;
         tShutScreenOff.setInterval(CUSTOM_DELAY_tShutScreenOff);// Do it here anyway just so it is done and we're sure the next iteration of this task will be with the right delay.
+        tShutScreenOff.disable();
         tShutScreenOff.restartDelayed();
     }
     else{
         PL_("Invalid param : tpScreenOffDelayValue");
         CUSTOM_DELAY_tShutScreenOff = DEFAULT_DELAY_tShutScreenOff;
+        tShutScreenOff.disable();
+        tShutScreenOff.restartDelayed();
     }
 
     PL_("VALUES : ");
-        PP_("CUSTOM_DELAY_tReadSensor :");
-        PL_(CUSTOM_DELAY_tReadSensor);
-        PP_("CUSTOM_DELAY_tShutScreenOff :");
-        PL_(CUSTOM_DELAY_tShutScreenOff);
-        PP_("CUSTOM_DELAY_SendOnline :");
-        PL_(CUSTOM_DELAY_SendOnline);
+    PP_("CUSTOM_DELAY_tReadSensor :");
+    PL_(CUSTOM_DELAY_tReadSensor);
+    PP_("CUSTOM_DELAY_tShutScreenOff :");
+    PL_(CUSTOM_DELAY_tShutScreenOff);
+    PP_("CUSTOM_DELAY_SendOnline :");
+    PL_(CUSTOM_DELAY_SendOnline);
 }
 
-bool isValidDelay(char* param)//USELESS, doesn't work smh
+bool isValidDelay(char* param)
 {
-
-    int x = atoi(param);//convert to int (so it removes anything that isn't a number to allow us to then check if the value is actually a number or just some random data).
-    PP_("X value : ");
-    PL_(x);
     char y [32] = "";
     for (int i=0; i<32; i++)
      {
@@ -1059,12 +1066,13 @@ bool isValidDelay(char* param)//USELESS, doesn't work smh
             y[i] = param[i];
          }
      }
-     printf("\n");
-     printf(y);
-     printf("\n");
-     for (int i=0; i<32; i++)
+     PL_("getting rid of random data... ");
+     PL_(y);
+     PL_("");
+     /*
+      for (int i=0; i<32; i++)
      {
-         /* Passing addresses of array elements*/
+         //Passing addresses of array elements
          disp (&y[i]);
          if(isalnum(y[i]))
          {
@@ -1075,18 +1083,18 @@ bool isValidDelay(char* param)//USELESS, doesn't work smh
           printf("is not digit");
          }
      }
-
+     */
     if(!isalnum(y[0]))//After multiple tests it seems that the function idDigit never returns true even if what we entered is definitely a number so we use isalnum instead.
     {
-        printf("x is not digit \n");
+        PL_("y is not digit ");
         return false;
     }
-    printf("x is digit \n");
+    PL_("y is digit ");
     return true;
 }
 
 void disp( char *num)
 {
-    printf("%c ", *num);
-    printf("-");
+    PP_(*num);
+    PP_("-");
 }
