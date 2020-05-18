@@ -91,8 +91,8 @@ float prv_TMP117_T = 0.0;
 int prvCol48 = WHITE;
 
 //--Customisable delays
-const unsigned int DEFAULT_DELAY_tReadSensor = 5*TASK_SECOND;
-const unsigned int DEFAULT_DELAY_tShutScreenOff = 1*TASK_MINUTE;
+const unsigned int DEFAULT_DELAY_tReadSensor = 1*TASK_MINUTE;
+const unsigned int DEFAULT_DELAY_tShutScreenOff = 5*TASK_MINUTE;
 const unsigned int DEFAULT_DELAY_SendOnline = 10*TASK_SECOND;
 unsigned int CUSTOM_DELAY_tReadSensor = DEFAULT_DELAY_tReadSensor;
 unsigned int CUSTOM_DELAY_tShutScreenOff = DEFAULT_DELAY_tShutScreenOff;
@@ -261,6 +261,9 @@ void setup()
     server.on("/", handleRoot);
     server.on("/config", []{ iotWebConf.handleConfig(); });
     server.onNotFound([](){ iotWebConf.handleNotFound(); });
+
+
+    loadTaskParameters();
 
     M5.Lcd.println("Keep the two outer buttons pressed to force AP mode.");
 
@@ -1007,6 +1010,7 @@ void loadTaskParameters()
         //selectedTimeZone.setInterval(CUSTOM_DELAY_tReadSensor-1);//NTP querry every time we refresh the screen.
     }
     else{
+        PL_("Invalid param : tpNewMeasureDelayValue");
         CUSTOM_DELAY_tReadSensor = DEFAULT_DELAY_tReadSensor;
     }
 
@@ -1015,6 +1019,7 @@ void loadTaskParameters()
         CUSTOM_DELAY_SendOnline = atoi(tpSendOnlineDelayValue) * TASK_MINUTE;// Don't set interval here as depending on what phase the task is, we don't want to use the same delay (could conflict with the very short delay we want at the initiations of the task)
     }
     else{
+        PL_("Invalid param : tpSendOnlineDelayValue");
         CUSTOM_DELAY_SendOnline = DEFAULT_DELAY_SendOnline;
     }
 
@@ -1025,6 +1030,7 @@ void loadTaskParameters()
         tShutScreenOff.restartDelayed();
     }
     else{
+        PL_("Invalid param : tpScreenOffDelayValue");
         CUSTOM_DELAY_tShutScreenOff = DEFAULT_DELAY_tShutScreenOff;
     }
 
@@ -1038,11 +1044,49 @@ void loadTaskParameters()
 }
 
 bool isValidDelay(char* param)//USELESS, doesn't work smh
-{/*
-    if(!isDigit(param[1]))
+{
+
+    int x = atoi(param);//convert to int (so it removes anything that isn't a number to allow us to then check if the value is actually a number or just some random data).
+    PP_("X value : ");
+    PL_(x);
+    char y [32] = "";
+    for (int i=0; i<32; i++)
+     {
+         /* Passing addresses of array elements*/
+         disp (&param[i]);
+         if (isalnum(param[i]))//getting rid of the "?" in the "param" array which cause the method isalnum to always return false
+         {
+            y[i] = param[i];
+         }
+     }
+     printf("\n");
+     printf(y);
+     printf("\n");
+     for (int i=0; i<32; i++)
+     {
+         /* Passing addresses of array elements*/
+         disp (&y[i]);
+         if(isalnum(y[i]))
+         {
+          printf("is digit");
+         }
+         else
+         {
+          printf("is not digit");
+         }
+     }
+
+    if(!isalnum(y[0]))//After multiple tests it seems that the function idDigit never returns true even if what we entered is definitely a number so we use isalnum instead.
     {
-        PL_("INVALID PARAM");
+        printf("x is not digit \n");
         return false;
-    }*/
+    }
+    printf("x is digit \n");
     return true;
+}
+
+void disp( char *num)
+{
+    printf("%c ", *num);
+    printf("-");
 }
