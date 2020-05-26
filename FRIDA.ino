@@ -1,4 +1,3 @@
-
 // #define _TASK_TIMECRITICAL     // Enable monitoring scheduling overruns
 //#define _TASK_SLEEP_ON_IDLE_RUN // Enable 1 ms SLEEP_IDLE powerdowns between tasks if no callback methods were invoked during the pass
 //#define _TASK_STATUS_REQUEST      // Compile with support for StatusRequest functionality - triggering tasks on status change events in addition to time only
@@ -101,7 +100,8 @@ unsigned int CUSTOM_DELAY_SendOnline = DEFAULT_DELAY_SendOnline;
 const char initialThingName[] = "FRIDA";
 
 // -- Initial password to connect to the Thing, when it creates an own Access Point.
-const char wifiInitialApPassword[] = "12345678";
+String defaultApPassword = "12345678";
+char wifiInitialApPassword[IOTWEBCONF_WORD_LEN] = "12345678";
 
 #define STRING_LEN 128
 #define NUMBER_LEN 32
@@ -133,9 +133,9 @@ IotWebConfParameter ElsaSensorName_Humidity = IotWebConfParameter("Elsa optional
 
 IotWebConfSeparator Separator2 = IotWebConfSeparator();
 
-IotWebConfParameter tpNewMeasureDelay = IotWebConfParameter("New measure frequency (in minutes)", "tpNewMeasureDelayID", tpNewMeasureDelayValue, NUMBER_LEN);
-IotWebConfParameter tpScreenOffDelay = IotWebConfParameter("Screen active time (in minutes)", "tpScreenOffDelayID", tpScreenOffDelayValue, NUMBER_LEN);
-IotWebConfParameter tpSendOnlineDelay = IotWebConfParameter("Communication with the online platform delay (in minutes)", "tpSendOnlineDelayID", tpSendOnlineDelayValue, NUMBER_LEN);
+IotWebConfParameter tpNewMeasureDelay = IotWebConfParameter("New measure frequency (in seconds)", "tpNewMeasureDelayID", tpNewMeasureDelayValue, NUMBER_LEN);
+IotWebConfParameter tpScreenOffDelay = IotWebConfParameter("Screen active time (in seconds)", "tpScreenOffDelayID", tpScreenOffDelayValue, NUMBER_LEN);
+IotWebConfParameter tpSendOnlineDelay = IotWebConfParameter("Communication with the online platform delay (in seconds)", "tpSendOnlineDelayID", tpSendOnlineDelayValue, NUMBER_LEN);
 
 
 // -- Configuration specific key. The value should be modified if config structure was changed.
@@ -217,8 +217,8 @@ void setup()
     {
         PL_("Couldn't find SHT31");
         PL_("Couldn't find TMP117");
-        M5.Lcd.println("Couldn't find SHT31");
-        M5.Lcd.println("Couldn't find TMP117");
+        M5.Lcd.println("Could not find any sensor...");
+        M5.Lcd.println("Please connect a sensor and restart Frida.");
         foundTMP117 = false;
         foundSHT31 = false;
         delay (10000);
@@ -228,6 +228,28 @@ void setup()
     }
     selectedTimeZone.setLocation(defaultTimeRegion);
     //Access Point
+    M5.Lcd.println("Keep outer buttons pressed to force setup.");
+    M5.Lcd.println("Keep all buttons pressed to reset AP password.");
+    M5.update();
+    delay(10000);//M5.BtnA.PressedFor() doesn't work in the setup so we just add a delay for the user to read the screen then press the buttons.
+    M5.update();
+    if (M5.BtnA.isPressed() && M5.BtnB.isPressed() && M5.BtnC.isPressed())
+    {
+        PL_("Resetting AP mode");
+        //iotWebConf.resetApPassword(defaultApPassword);
+        //iotWebConf._forceDefaultPassword = true;
+        //resetAPpassword();
+        iotWebConf.resetApPassword(true);
+        M5.Lcd.println("Resetting AP mode.");
+        //PL_(server.arg(iotWebConf._apPasswordParameter.getId()));
+        delay(2500);
+    }
+    else if (M5.BtnA.isPressed() && M5.BtnC.isPressed()) {
+        PL_("Requested AP mode.");
+        iotWebConf.forceApMode(true);
+        M5.Lcd.println("Forcing AP mode.");
+        delay(2500);
+    }
     iotWebConf.addParameter(&TimeZone_Param);
     iotWebConf.addParameter(&Separator1);
     iotWebConf.addParameter(&ElsaHostName);
@@ -250,7 +272,6 @@ void setup()
     {
         //rename ThingName with initial Thing Name
     }
-
     if(iotWebConf.getThingNameParameter() != initialThingName)
     {
         iotWebConf.skipApStartup();
@@ -265,17 +286,8 @@ void setup()
 
     loadTaskParameters();
 
-    M5.Lcd.println("Keep the outer buttons pressed to force setup.");
 
-    M5.update();
-    delay(10000);//M5.BtnA.PressedFor() doesn't work in the setup so we just add a delay for the user to read the screen then press the buttons.
-    M5.update();
-    if (M5.BtnA.isPressed() && M5.BtnC.isPressed()) {
-        PL_("Requested AP mode");
-        iotWebConf.forceApMode(true);
-        M5.Lcd.println("Forcing AP mode.");
-        delay(2500);
-    }
+
     Serial.println("Ready.");
     M5.Lcd.clear();
 }
@@ -544,6 +556,10 @@ void readButtonsStateCallBack()
         tShutScreenOff.restartDelayed(CUSTOM_DELAY_tShutScreenOff);
         tReadSensor.forceNextIteration();
     }
+    if(tReadButtonsState.getRunCounter() == 1) //force display at the beginning
+    {
+        tReadSensor.forceNextIteration();
+    }
 }
 
 void shutScreenOffCallBack()
@@ -660,10 +676,12 @@ void checkWebConfStatusCallBack()
         //tReadSensor.delay(2000);//Delay this task to allow us to actually read what we wrote on the screen.
         tWebConfLoop.enableIfNot();
     }
-    /*if(tCheckWebConfStatus.getRunCounter() % 5 == 0 && isValidDelay(tpNewMeasureDelayValue) && isValidDelay(tpScreenOffDelayValue) && isValidDelay(tpSendOnlineDelayValue))//try every 5 iterations to load new parameters to make sure we end up loading them even if we can't connect to WiFi.
+    /*
+    if(tCheckWebConfStatus.getRunCounter() % 5 == 0 && isValidDelay(tpNewMeasureDelayValue) && isValidDelay(tpScreenOffDelayValue) && isValidDelay(tpSendOnlineDelayValue))//try every 5 iterations to load new parameters to make sure we end up loading them even if we can't connect to WiFi.
     {
-        loadTaskParameters();
-    }*/
+        tReadSensor.forceNextIteration();
+    }
+    */
 }
 void initNTP()
 {
@@ -1009,11 +1027,10 @@ void loadTaskParameters()
 {
     if(isValidDelay(tpNewMeasureDelayValue))
     {
-        CUSTOM_DELAY_tReadSensor = atoi(tpNewMeasureDelayValue) * TASK_MINUTE;
-        tReadSensor.setInterval(CUSTOM_DELAY_tReadSensor);// Do it here because the interval is never updated elsewhere in the code.
+        CUSTOM_DELAY_tReadSensor = atoi(tpNewMeasureDelayValue) * TASK_SECOND;
+        tReadSensor.setInterval(CUSTOM_DELAY_tReadSensor);// Doing it here because the interval is never updated elsewhere in the code. This interval will also serve as update interval for the time displayed on screen.
         tReadSensor.disable();
         tReadSensor.restartDelayed();
-        //selectedTimeZone.setInterval(CUSTOM_DELAY_tReadSensor-1);//NTP querry every time we refresh the screen.
     }
     else{
         PL_("Invalid param : tpNewMeasureDelayValue");
@@ -1024,7 +1041,7 @@ void loadTaskParameters()
 
     if(isValidDelay(tpSendOnlineDelayValue))
     {
-        CUSTOM_DELAY_SendOnline = atoi(tpSendOnlineDelayValue) * TASK_MINUTE;// Don't set interval here as depending on what phase the task is, we don't want to use the same delay (could conflict with the very short delay we want at the initiations of the task)
+        CUSTOM_DELAY_SendOnline = atoi(tpSendOnlineDelayValue) * TASK_SECOND;// Don't set interval here as depending on what phase the task is, we don't want to use the same delay (could conflict with the very short delay we want at the initiations of the task)
     }
     else{
         PL_("Invalid param : tpSendOnlineDelayValue");
@@ -1033,7 +1050,7 @@ void loadTaskParameters()
 
     if(isValidDelay(tpScreenOffDelayValue))
     {
-        CUSTOM_DELAY_tShutScreenOff = atoi(tpScreenOffDelayValue) * TASK_MINUTE;
+        CUSTOM_DELAY_tShutScreenOff = atoi(tpScreenOffDelayValue) * TASK_SECOND;
         tShutScreenOff.setInterval(CUSTOM_DELAY_tShutScreenOff);// Do it here anyway just so it is done and we're sure the next iteration of this task will be with the right delay.
         tShutScreenOff.disable();
         tShutScreenOff.restartDelayed();
@@ -1098,3 +1115,9 @@ void disp( char *num)
     PP_(*num);
     PP_("-");
 }
+/*
+void resetAPpassword()
+{
+   defaultApPassword.toCharArray(wifiInitialApPassword, IOTWEBCONF_WORD_LEN);
+}
+*/
