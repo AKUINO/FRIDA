@@ -52,7 +52,7 @@ const long utcOffsetInSeconds = 3600;                   //GMT +1
 //WiFiUDP ntpUDP;
 //NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 Timezone selectedTimeZone;
-String defaultTimeRegion = "GMT";
+String defaultTimeRegion = "Europe/Brussels";
 
 bool validTimeZone = true;
 
@@ -157,6 +157,9 @@ void webConfLoopCallBack();
 void checkWebConfStatusCallBack();
 void getElsaCredentialsCallBack();
 
+//void onElsaEnable();
+//void onElsaDisable();
+
 // -- TASKS
 //SENSORS & DISPLAY TASKS
 Task tReadSensor(DEFAULT_DELAY_tReadSensor, TASK_FOREVER, &readSensorCallBack, &ts, true);
@@ -165,11 +168,11 @@ Task tShutScreenOff(DEFAULT_DELAY_tShutScreenOff, 1, &shutScreenOffCallBack, &ts
 
 //IotWebConf
 Task tWebConfLoop(TASK_SECOND, TASK_FOREVER, &webConfLoopCallBack, &ts, true);
-Task tCheckWebConfStatus(10 * TASK_SECOND, 60, &checkWebConfStatusCallBack, &ts, true);// 60 iterations because we want it to try for 10 minutes then give up. When we give up, the AP will be shut down too.
+Task tCheckWebConfStatus(10 * TASK_SECOND, TASK_FOREVER, &checkWebConfStatusCallBack, &ts, true);// 60 iterations because we want it to try for 10 minutes then give up. When we give up, the AP will be shut down too.
 
 //NETWORK
 Task tIoTimeUpd(10 * TASK_SECOND, TASK_FOREVER, &aioTimeUpdBackgroundCallback, &ts, true);
-Task tSendToElsa(DEFAULT_DELAY_SendOnline, TASK_FOREVER, &getElsaCredentialsCallBack, &ts, false);
+Task tSendToElsa(DEFAULT_DELAY_SendOnline, 20, &getElsaCredentialsCallBack, &ts, false);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////START OF SETUP//////////////////////////////////////////////////////
@@ -217,7 +220,7 @@ void setup()
     {
         PL_("Couldn't find SHT31");
         PL_("Couldn't find TMP117");
-        M5.Lcd.println("Could not find any sensor...");
+        M5.Lcd.println("Could not find any sensors...");
         M5.Lcd.println("Please connect a sensor and restart Frida.");
         foundTMP117 = false;
         foundSHT31 = false;
@@ -660,7 +663,10 @@ void checkWebConfStatusCallBack()
         //timeClient.begin();
         initNTP();
         //tWebConfLoop.setInterval(3*TASK_SECOND);
+        tSendToElsa.setCallback(getElsaCredentialsCallBack);
+        tSendToElsa.setIterations(20);
         tSendToElsa.enableDelayed(DEFAULT_DELAY_SendOnline);
+        //tSendToElsa.enableIfNot();
         loadTaskParameters();//load them after so the first tSendToElsa iteration happens after the default time
         tWebConfLoop.disable();
         tCheckWebConfStatus.disable();
@@ -748,7 +754,9 @@ void getElsaCredentialsCallBack()//initializing phase
             PP_(" + ");
             PP_(ElsaHumiditySensorName);
             PL_(" .")
+            //tSendToElsa.disable(); //Disable tasks linked to platforms which don't have valid parameters to avoid unnecessary work.
         }
+
     }
     else
     {
@@ -757,7 +765,23 @@ void getElsaCredentialsCallBack()//initializing phase
         WiFi.disconnect();
         WiFi.begin(WIFI_SSID, WIFI_SSID);
     }
-
+    if(tSendToElsa.isLastIteration())
+    {
+        PL_("Returning to AP mode");
+        tWebConfLoop.setCallback(webConfLoopCallBack);
+        tWebConfLoop.enable();
+        tCheckWebConfStatus.setCallback(checkWebConfStatusCallBack);
+        tCheckWebConfStatus.enable();
+        tSendToElsa.disable();
+    }
+}
+void onElsaEnable()
+{
+    PL_("Elsa Enable debug");
+}
+void onElsaDisable()
+{
+    PL_("Elsa Disable debug");
 }
 
 void aioTimeUpdBackgroundCallback()
@@ -804,8 +828,8 @@ void sendToElsa_SHT31()
             PP_("Sending data : GET ");
             PL_(url);
             client.get(url);
-            //if(client.available())
-            //{
+            if(client.available())
+            {
                 int statusCode = client.responseStatusCode();
                 String response = client.responseBody();
                 PP_("Status code: ");
@@ -832,10 +856,10 @@ void sendToElsa_SHT31()
                         return;
                     }
                 }
-            //}
-            //else{
-            //   PL_("WiFi Client not available");
-            //}
+            }
+            else{
+               PL_("WiFi Client not available");
+            }
         }
         tSendToElsa.delay(1000);
         if(SHT31_H>=-30.00)//Only send actual data without errors (due to missing Vcc cable ?).
@@ -848,8 +872,8 @@ void sendToElsa_SHT31()
             PP_("Sending data : GET ");
             PL_(url);
             client.get(url);
-            //if(client.available())
-           // {
+            if(client.available())
+            {
                 int statusCode = client.responseStatusCode();
                 String response = client.responseBody();
                 PP_("Status code: ");
@@ -876,10 +900,10 @@ void sendToElsa_SHT31()
                         return;
                     }
                 }
-            //}
-            //else{
-            //    PL_("WiFi Client not available");
-            //}
+            }
+            else{
+                PL_("WiFi Client not available");
+            }
         }
         PL_();
         PL_("closing connection");
@@ -892,7 +916,7 @@ void sendToElsa_SHT31()
         client.stop();
         return;
     }
-    //client.stop();
+    client.stop();
     tSendToElsa.setCallback(&sendToElsa_SHT31);
 }
 
@@ -916,8 +940,8 @@ void sendToElsa_TMP117()
         PP_("Sending data : GET ");
         PL_(url);
         client.get(url);
-        //if(client.available())
-       //{
+        if(client.available())
+        {
             int statusCode = client.responseStatusCode();
             String response = client.responseBody();
             PP_("Status code: ");
@@ -944,10 +968,10 @@ void sendToElsa_TMP117()
                     return;
                 }
             }
-        //}
-        //else{
-        //    PL_("WiFi Client not available");
-       // }
+        }
+        else{
+            PL_("WiFi Client not available");
+        }
         PL_();
         PL_("closing connection");
         elsaTimeoutCounter = 0;
@@ -959,7 +983,7 @@ void sendToElsa_TMP117()
         client.stop();
         return;
     }
-    //client.stop();
+    client.stop();
     tSendToElsa.setCallback(&sendToElsa_TMP117);
 }
 
@@ -1010,7 +1034,7 @@ void resetTaskForWiFiConnection (Task& dataSendingTask, PlatformUsed platformUse
             break;
         case Elsa:
             //dataSendingTask.disable();
-            dataSendingTask.set(DEFAULT_DELAY_SendOnline, TASK_FOREVER, &getElsaCredentialsCallBack); //this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
+            dataSendingTask.set(DEFAULT_DELAY_SendOnline, 20, &getElsaCredentialsCallBack); //this means the Task will re check for WiFi connection anyway. Not sure if it is very useful though.
             //dataSendingTask.setCallback(&getElsaCredentialsCallBack);
             //dataSendingTask.waitFor(tConnect.getInternalStatusRequest()); //connectToElsaCallBack() will only start after the connection to the WiFi is successful => depends on the statusRequest tConnect sends.
             break;
