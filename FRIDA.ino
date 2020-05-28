@@ -775,14 +775,6 @@ void getElsaCredentialsCallBack()//initializing phase
         tSendToElsa.disable();
     }
 }
-void onElsaEnable()
-{
-    PL_("Elsa Enable debug");
-}
-void onElsaDisable()
-{
-    PL_("Elsa Disable debug");
-}
 
 void aioTimeUpdBackgroundCallback()
 {
