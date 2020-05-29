@@ -13,15 +13,7 @@
 // #define _TASK_DEFINE_MILLIS    // Force forward declaration of millis() and micros() "C" style
 // #define _TASK_EXPOSE_CHAIN     // Methods to access tasks in the task chain
 // Debug and Test options
-#define _DEBUG_
-//#define _TEST_
-#ifdef _DEBUG_
-#define PP_(a) Serial.print(a);
-#define PL_(a) Serial.println(a);
-#else
-#define PP_(a)
-#define PL_(a)
-#endif
+
 
 
 /*
@@ -181,10 +173,22 @@ Task tSendToElsa(DEFAULT_DELAY_SendOnline, 20, &getElsaCredentialsCallBack, &ts,
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void setup()
 {
+    if(Serial)
+    {
+       #define _DEBUG_
+    }
+    //#define _TEST_
+    #ifdef _DEBUG_
+    #define PP_(a) Serial.print(a);
+    #define PL_(a) Serial.println(a);
+    #else
+    #define PP_(a)
+    #define PL_(a)
+    #endif
     #if defined(_DEBUG_) || defined(_TEST_)
     Serial.begin(115200);
     #endif
-    Serial.println("Starting up...");
+    PL_("Starting up...");
     //M5STACK & SENSORS
     M5.begin(true,false,true); // init lcd, serial, but don't init sd card
     M5.Power.begin();
@@ -774,6 +778,14 @@ void getElsaCredentialsCallBack()//initializing phase
         tCheckWebConfStatus.enable();
         tSendToElsa.disable();
     }
+}
+void onElsaEnable()
+{
+    PL_("Elsa Enable debug");
+}
+void onElsaDisable()
+{
+    PL_("Elsa Disable debug");
 }
 
 void aioTimeUpdBackgroundCallback()
